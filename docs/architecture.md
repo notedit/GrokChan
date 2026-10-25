@@ -1,34 +1,39 @@
 # Architecture
 
-GrokChan connects a browser or M5Stack-class device to an upstream **agent** through a small Cloudflare Worker **bridge**.
+GrokChan connects a **Browser**, **M5Stack**-class device, or (roadmap) **Phone** client to an upstream **agent** through a small Cloudflare Worker **bridge**. Separately, **phone-use** lets the agent drive a real or cloud phone (tap / swipe / type / screenshot).
 
 English is the default. Chinese translation: [architecture.zh-CN.md](architecture.zh-CN.md).
 
 ## High-level flow
 
 ```text
-┌─────────────┐     HTTPS              ┌──────────────────┐
-│  Browser /  │ ─────────────────────▶ │  Bridge Worker   │
-│  M5Stack    │ ◀───────────────────── │  (Cloudflare)    │
-│  firmware   │     poll / reply text  │  + Durable Obj.  │
-└─────────────┘                        └────────┬─────────┘
-                                                │
-                              agent.deliver()   │
-                              + one-shot        │
-                              reply.url         ▼
-                                       ┌──────────────────┐
-                                       │  Agent provider  │
-                                       │  grokbot | muse… │
-                                       └────────┬─────────┘
-                                                │
-                         POST /api/reply/<token>│
-                                                ▼
-                                       Bridge stores assistant turn
+┌─────────────────┐     HTTPS              ┌──────────────────┐
+│  Browser /      │ ─────────────────────▶ │  Bridge Worker   │
+│  M5Stack /      │ ◀───────────────────── │  (Cloudflare)    │
+│  Phone (client) │     poll / reply text  │  + Durable Obj.  │
+└─────────────────┘                        └────────┬─────────┘
+                                                    │
+                                  agent.deliver()   │
+                                  + one-shot        │
+                                  reply.url         ▼
+                                           ┌──────────────────┐
+                                           │  Agent provider  │
+                                           │  grokbot | muse… │
+                                           └────────┬─────────┘
+                                                    │
+                             POST /api/reply/<token>│
+                                                    ▼
+                                           Bridge stores assistant turn
+
+Phone-use (agent capability — not a new AGENT_PROVIDER):
+
+  Agent (Grok Bot) ──MCP / tools──▶ cloud phone (e.g. Mobilerun)
+                 └──ADB / screen mirror──▶ own Android (wireless debugging)
 ```
 
 ```mermaid
 sequenceDiagram
-  participant C as Client (web / device)
+  participant C as Client (Browser / M5Stack / Phone)
   participant W as Bridge Worker
   participant A as Agent provider
   C->>W: POST /api/chat
@@ -36,6 +41,8 @@ sequenceDiagram
   A->>W: POST reply.url {text}
   W->>C: GET /api/poll → assistant turn
 ```
+
+> **Bridge scope:** `bridge/` stays **chat ↔ agent**. Phone-use is primarily **tools on the agent** (Grok Bot MCP / device access). Do not invent a phone `AGENT_PROVIDER` for remote control. Optional later: treat the phone as a **client** of the bridge for voice/chat like M5Stack. See [phone-use.md](phone-use.md).
 
 ## Multi-agent design
 
@@ -54,7 +61,8 @@ HTTP routes and `ChatHub` are **provider-agnostic**. Upstream brains implement `
 | --- | --- |
 | `bridge/` | Deployable Worker + DO + chat UI + agent adapters |
 | `firmware/` | ESP32 / M5Stack placeholder (mic / speaker / face later) |
-| Grok Bot routine | Webhook-triggered; replies to `reply.url` |
+| `phone-use/` | Roadmap placeholder for remote phone control docs/helpers |
+| Grok Bot routine | Webhook-triggered; replies to `reply.url`; may also hold phone tools |
 
 ## Secrets
 
@@ -66,4 +74,4 @@ Set `PUBLIC_ORIGIN` and `AGENT_PROVIDER` as non-secret `[vars]`.
 
 **Caveat:** some Cloudflare MCP/API tools redact secret values when writing them. Prefer interactive `wrangler secret put` so keys are not replaced by placeholders (symptom: webhook **401**).
 
-See [bridge/README.md](../bridge/README.md).
+See [bridge/README.md](../bridge/README.md). Phone-use credentials (ADB keys, cloud-phone API tokens) likewise stay out of git — see [phone-use.md](phone-use.md).
