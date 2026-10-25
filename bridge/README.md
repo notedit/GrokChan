@@ -1,50 +1,134 @@
-# Bridge (Cloudflare Worker)
+# GrokChan Bridge
 
-> Status: **scaffold docs**. Implementation can reuse the same pattern as a web chat Worker that talks to a Grok Bot webhook routine.
+Cloudflare Worker that bridges a browser (and later M5Stack firmware) to an upstream **agent**. Today the only production provider is **Grok Bot** (webhook routine + one-shot `reply.url`). A **Muse** stub exists so more agents can plug in behind the same HTTP surface.
 
-## Idea
+English is the default language for docs in this repo. Chinese: [README.zh-CN.md](../README.zh-CN.md) (project overview) and [docs/architecture.zh-CN.md](../docs/architecture.zh-CN.md).
 
-The device (or a thin web debug UI) should not hold the Grok Bot webhook key. The Worker:
+## Flow
 
-1. Accepts a chat turn from the device (`POST /api/chat`).
-2. POSTs an event to the Grok Bot webhook routine, including a **one-shot** `reply.url`.
-3. Accepts the routine’s reply on that URL (`POST /api/reply/<token>`).
-4. Returns text (and later TTS) to the device via poll or stream.
+```text
+Browser ──POST /api/chat──▶ Worker ──agent.deliver(inbound, reply.url)──▶ Grok Bot routine
+   ▲                         ▲                                              │
+   └──GET /api/poll(1.5s)────┴────────POST /api/reply/<one-shot token>◀─────┘
+```
 
-Durable Objects (SQLite) are a good fit for per-session pending replies.
+- One Worker + one Durable Object (SQLite). No runtime npm deps.
+- Webhook URL/key live only in Worker secrets — never in the page or firmware.
+- Passcode (`SITE_PASSCODE`) gates the UI because the page can fire your bot.
+- Reply URL token is single-use and expires (default 10 minutes).
 
-## Environment variables
+## Agent providers
 
-**Non-secret vars** (e.g. `wrangler.toml` `[vars]`):
+| Id | Status | Module |
+| --- | --- | --- |
+| `grokbot` (default) | Working | [`src/agents/grokbot.ts`](src/agents/grokbot.ts) |
+| `muse` | Stub (returns 501) | [`src/agents/muse.ts`](src/agents/muse.ts) |
 
-| Name | Purpose |
-| --- | --- |
-| `PUBLIC_ORIGIN` | Public `https://…` origin used to build `reply.url` (no trailing slash) |
-| `GROK_WEBHOOK_HEADER` | Auth header name (often `Authorization`) |
-| `GROK_WEBHOOK_SCHEME` | `Bearer` or `raw` |
+Select with `AGENT_PROVIDER` in `wrangler.toml` `[vars]` (default `grokbot`). Shared contracts live in [`src/agents/types.ts`](src/agents/types.ts); registry in [`src/agents/registry.ts`](src/agents/registry.ts).
 
-**Secrets** (`wrangler secret put` only — never commit):
+### Grok Bot inbound payload
 
-| Name | Purpose |
-| --- | --- |
-| `GROK_WEBHOOK_URL` | Routine webhook URL |
-| `GROK_WEBHOOK_KEY` | Routine sender key |
-| Optional device / site shared secret | Gate who may call `/api/chat` |
+Kept as schema `grokbot-web.inbound.v1` so existing Grok Bot webhook routines stay compatible:
 
-Copy `.dev.vars.example` → `.dev.vars` for local `wrangler dev`. Real values stay on your machine and in Cloudflare secrets.
+```json
+{
+  "schema": "grokbot-web.inbound.v1",
+  "session_id": "s_…",
+  "message": "user text",
+  "history": [{"role": "user", "text": "…"}, {"role": "assistant", "text": "…"}],
+  "reply": {"method": "POST", "url": "https://<PUBLIC_ORIGIN>/api/reply/<token>"}
+}
+```
 
-## Grok Bot routine
+The routine POSTs `{"text":"…"}` to `reply.url` (no other credentials).
 
-Create a webhook-triggered routine (name it something like **device bridge**). The prompt should:
+## Prerequisites
 
-1. Read the inbound user text / transcript from the event body.
-2. Produce the assistant reply.
-3. `POST` the reply JSON to `reply.url` with the expected shape.
-4. Optionally sync a short summary to your main chat (optional product choice).
+- Node.js **22+**
+- Cloudflare account
+- A Grok Bot **webhook** routine (e.g. “Web chat bridge” / “device bridge”)
 
-## What is not in this repo yet
+## Deploy
 
-- Full Worker source (coming; keep this folder docs-first for now)
-- Deployed URLs, passcodes, or webhook keys
+```bash
+cd bridge
+npm install
+npx wrangler login          # or CLOUDFLARE_API_TOKEN
+```
 
-When adding code, start from a minimal Worker + Durable Object and document every secret in this README — not in source.
+1. Copy webhook URL + sender key from the routine panel into secrets (never commit them).
+2. Deploy once to learn your `*.workers.dev` origin.
+3. Set `PUBLIC_ORIGIN` in `wrangler.toml` to that **https** origin (no trailing slash).
+4. Put secrets with the CLI (important — see caveat below):
+
+```bash
+npx wrangler secret put GROK_WEBHOOK_URL
+npx wrangler secret put GROK_WEBHOOK_KEY
+npx wrangler secret put SITE_PASSCODE
+```
+
+Generate a passcode with `openssl rand -base64 18`.
+
+5. Redeploy and check health:
+
+```bash
+npx wrangler deploy
+curl https://<your-origin>/api/health
+# expect: {"ok":true,"configured":true}
+```
+
+### Secret caveat (MCP / dashboards)
+
+Some Cloudflare MCP / API helpers **redact** secret values into placeholders when writing secrets. Always set `GROK_WEBHOOK_*` and `SITE_PASSCODE` with interactive `wrangler secret put` (or paste carefully in the dashboard). If chat returns **401** from the webhook, re-put the key via wrangler.
+
+## Environment
+
+| Name | Kind | Purpose | Default |
+| --- | --- | --- | --- |
+| `PUBLIC_ORIGIN` | var | Public https origin for `reply.url` | required |
+| `AGENT_PROVIDER` | var | `grokbot` or `muse` | `grokbot` |
+| `GROK_WEBHOOK_URL` | secret | Routine webhook URL | required (grokbot) |
+| `GROK_WEBHOOK_KEY` | secret | Routine sender key | required (grokbot) |
+| `SITE_PASSCODE` | secret | Page access passcode | required |
+| `GROK_WEBHOOK_HEADER` | var | Auth header name | `Authorization` |
+| `GROK_WEBHOOK_SCHEME` | var | `Bearer` or `raw` | `Bearer` |
+| `RATE_LIMIT_PER_MIN` | var | Chat rate limit | `20` |
+| `TOKEN_TTL_SECONDS` | var | Reply token TTL | `600` |
+
+Local: copy `.dev.vars.example` → `.dev.vars` (git-ignored).
+
+## Grok Bot routine tips
+
+1. Trigger type: **Webhook**.
+2. Read `message` / `history` from the event body.
+3. Generate the assistant reply.
+4. `POST` JSON `{"text":"…"}` to `reply.url`.
+5. Optional: post a short “【网页聊天同步】” / sync note to your main chat.
+
+## Develop & test
+
+```bash
+cp .dev.vars.example .dev.vars
+npm run dev          # http://localhost:8787
+npm test             # mock webhook + real wrangler dev (fake secrets)
+npm run typecheck
+```
+
+Local `PUBLIC_ORIGIN` is localhost — a real Grok Bot cloud routine cannot reach it. Use a tunnel (`cloudflared`) for live routine debugging.
+
+## Layout
+
+```text
+bridge/
+  src/
+    index.ts          HTTP Worker
+    hub.ts            ChatHub Durable Object
+    page.html         Passcode-gated chat UI
+    agents/
+      types.ts        Provider interface
+      registry.ts     AGENT_PROVIDER switch
+      grokbot.ts      Webhook + reply.url (production)
+      muse.ts         Stub for later
+  test/               Vitest e2e
+  wrangler.toml
+```

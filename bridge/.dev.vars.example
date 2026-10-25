@@ -1,5 +1,7 @@
-# Local-only placeholders for `wrangler dev`. Copy to .dev.vars (git-ignored).
-# Never put real keys here or in git.
+# Copy to .dev.vars for `npm run dev` (local only; .dev.vars is git-ignored).
+# These are placeholders, not real secrets.
+AGENT_PROVIDER=grokbot
 GROK_WEBHOOK_URL=https://example.invalid/webhook
 GROK_WEBHOOK_KEY=replace-me
+SITE_PASSCODE=replace-me
 PUBLIC_ORIGIN=http://localhost:8787

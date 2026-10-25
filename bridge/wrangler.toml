@@ -1,0 +1,23 @@
+name = "grokchan-bridge"
+main = "src/index.ts"
+compatibility_date = "2026-10-22"
+
+[observability]
+enabled = true
+
+# Non-secret defaults. Set PUBLIC_ORIGIN to your deployed https origin
+# (no trailing slash) before real use. Secrets are NOT listed here:
+#   GROK_WEBHOOK_URL, GROK_WEBHOOK_KEY, SITE_PASSCODE -> `wrangler secret put`
+[vars]
+PUBLIC_ORIGIN = "https://YOUR_SUBDOMAIN.workers.dev"
+AGENT_PROVIDER = "grokbot"
+GROK_WEBHOOK_HEADER = "Authorization"
+GROK_WEBHOOK_SCHEME = "Bearer"
+
+[[durable_objects.bindings]]
+name = "HUB"
+class_name = "ChatHub"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ChatHub"]

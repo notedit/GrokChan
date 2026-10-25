@@ -2,24 +2,22 @@
 
 Thanks for helping build an open Grok Bot + M5Stack voice companion.
 
-## Status
-
-This repo is an early **scaffold**. Firmware and bridge code are placeholders; docs and architecture come first. Small, focused PRs are welcome.
+English is the default for docs and review comments. Chinese is welcome in issues/PRs; keep user-facing repo docs mirrored (EN primary + `.zh-CN.md` where we already have a pair).
 
 ## How to contribute
 
-1. Open an issue describing the idea or bug before large changes.
-2. Fork the repo and create a branch from `main`.
-3. Keep secrets out of git — use env vars / `wrangler secret put` only.
-4. Prefer clear Chinese or English in docs; match the style of existing READMEs.
-5. Open a pull request with a short summary of *what* and *why*.
+1. Open an issue for large ideas before coding.
+2. Fork and branch from `main`.
+3. **Never commit secrets** — use `.dev.vars` locally and `wrangler secret put` in Cloudflare.
+4. Prefer small PRs with a clear *what* / *why*.
+5. New upstream brains belong under `bridge/src/agents/` behind `AgentProvider` (see `grokbot.ts` / `muse.ts`), not as one-off routes in `index.ts`.
 
 ## Areas that need help
 
-- M5Stack / ESP32 firmware (I2S mic, speaker, wake word, display face)
-- Cloudflare Worker bridge (device session ↔ Grok Bot webhook routine)
-- Docs, examples, and hardware BOM for Stack-chan–style builds
+- M5Stack / ESP32 firmware (I2S mic, speaker, wake word, face)
+- Bridge: Muse (or other) agent adapters, TTS, device auth
+- Docs, BOM, Stack-chan–style build notes
 
 ## Code of conduct
 
-Be respectful. No harassment, no dumping stolen credentials or reverse‑engineered proprietary SDKs into the project.
+Be respectful. No harassment. Do not dump stolen credentials or reverse-engineered proprietary SDKs into the project.

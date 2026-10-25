@@ -7,7 +7,7 @@
 Stack-chan–style desktop companion firmware:
 
 - Capture voice from the onboard / I2S microphone
-- Send audio or ASR text to the bridge Worker
+- Send audio or ASR text to the `bridge/` Worker
 - Play TTS / reply audio on the speaker
 - Show a simple face / status on the LCD
 
@@ -15,7 +15,7 @@ Stack-chan–style desktop companion firmware:
 
 - Board: M5Stack Core / Core2 / Atom / compatible ESP32 variants
 - Framework: Arduino or PlatformIO (TBD)
-- Transport: HTTPS to the bridge (`POST /api/chat`, poll or stream for replies)
+- Transport: HTTPS to `bridge/` (`POST /api/chat`, poll or stream for replies)
 
 ## Layout (forthcoming)
 

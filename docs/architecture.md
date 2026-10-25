@@ -1,59 +1,69 @@
 # Architecture
 
-GrokChan connects an M5Stack-class device to [Grok Bot](https://grok.com) through a small Cloudflare Worker bridge and a webhook-triggered routine.
+GrokChan connects a browser or M5Stack-class device to an upstream **agent** through a small Cloudflare Worker **bridge**.
+
+English is the default. Chinese translation: [architecture.zh-CN.md](architecture.zh-CN.md).
 
 ## High-level flow
 
 ```text
-┌─────────────┐     Wi‑Fi / HTTPS      ┌──────────────────┐
-│  M5Stack    │ ─────────────────────▶ │  Bridge Worker   │
-│  firmware   │ ◀───────────────────── │  (Cloudflare)    │
-│  (mic/spk)  │     TTS / reply text   │  + Durable Obj.  │
+┌─────────────┐     HTTPS              ┌──────────────────┐
+│  Browser /  │ ─────────────────────▶ │  Bridge Worker   │
+│  M5Stack    │ ◀───────────────────── │  (Cloudflare)    │
+│  firmware   │     poll / reply text  │  + Durable Obj.  │
 └─────────────┘                        └────────┬─────────┘
                                                 │
-                         POST webhook event     │
-                         (incl. one-shot        │
-                          reply.url)            ▼
+                              agent.deliver()   │
+                              + one-shot        │
+                              reply.url         ▼
                                        ┌──────────────────┐
-                                       │  Grok Bot        │
-                                       │  webhook routine │
-                                       │  「device bridge」│
+                                       │  Agent provider  │
+                                       │  grokbot | muse… │
                                        └────────┬─────────┘
                                                 │
                          POST /api/reply/<token>│
                                                 ▼
-                                       Bridge returns audio/text
-                                       to the waiting device
+                                       Bridge stores assistant turn
 ```
-
-## Mermaid (same idea)
 
 ```mermaid
 sequenceDiagram
-  participant D as M5Stack firmware
+  participant C as Client (web / device)
   participant W as Bridge Worker
-  participant G as Grok Bot routine
-
-  D->>W: POST /api/chat (audio or text)
-  W->>G: webhook event + reply.url
-  G->>W: POST reply.url (assistant text)
-  W->>D: poll / stream response (text / TTS URL)
+  participant A as Agent provider
+  C->>W: POST /api/chat
+  W->>A: deliver(inbound, reply.url)
+  A->>W: POST reply.url {text}
+  W->>C: GET /api/poll → assistant turn
 ```
+
+## Multi-agent design
+
+HTTP routes and `ChatHub` are **provider-agnostic**. Upstream brains implement `AgentProvider` in `bridge/src/agents/`:
+
+| Provider | Role |
+| --- | --- |
+| `grokbot` | POST webhook event (`grokbot-web.inbound.v1`) with `reply.url`; routine POSTs text back |
+| `muse` | Stub today — reserved for Meta Muse / third-party Muse APIs later |
+
+`AGENT_PROVIDER` selects the active adapter (`grokbot` default). Adding a new agent means a new module + registry case, not new chat routes.
 
 ## Components
 
 | Piece | Role |
 | --- | --- |
-| `firmware/` | ESP32 / M5Stack sketch (Arduino or PlatformIO later): capture voice, play reply, simple face UI |
-| `bridge/` | Cloudflare Worker pattern reused from web chat bridges: hold session state, call webhook, accept one-shot replies |
-| Grok Bot routine | Webhook-triggered; generates the reply and POSTs it to `reply.url` |
+| `bridge/` | Deployable Worker + DO + chat UI + agent adapters |
+| `firmware/` | ESP32 / M5Stack placeholder (mic / speaker / face later) |
+| Grok Bot routine | Webhook-triggered; replies to `reply.url` |
 
-## Secrets (never in git)
+## Secrets
 
-Configure via environment / `wrangler secret put` only:
+Never commit secrets. Use `wrangler secret put` only:
 
-- `GROK_WEBHOOK_URL` — routine webhook URL
-- `GROK_WEBHOOK_KEY` — sender key
-- Optional: device shared secret, `PUBLIC_ORIGIN` for reply URLs
+- `GROK_WEBHOOK_URL`, `GROK_WEBHOOK_KEY`, `SITE_PASSCODE`
 
-See `bridge/README.md` for variable names. Do not commit passcodes or keys.
+Set `PUBLIC_ORIGIN` and `AGENT_PROVIDER` as non-secret `[vars]`.
+
+**Caveat:** some Cloudflare MCP/API tools redact secret values when writing them. Prefer interactive `wrangler secret put` so keys are not replaced by placeholders (symptom: webhook **401**).
+
+See [bridge/README.md](../bridge/README.md).
