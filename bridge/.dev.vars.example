@@ -1,0 +1,5 @@
+# Local-only placeholders for `wrangler dev`. Copy to .dev.vars (git-ignored).
+# Never put real keys here or in git.
+GROK_WEBHOOK_URL=https://example.invalid/webhook
+GROK_WEBHOOK_KEY=replace-me
+PUBLIC_ORIGIN=http://localhost:8787
