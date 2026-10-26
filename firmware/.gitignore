@@ -1,0 +1,5 @@
+.pio/
+.vscode/
+# Your real WiFi / server settings. Copy include/gc_config.example.h to include/gc_config.h.
+include/gc_config.h
+.build/

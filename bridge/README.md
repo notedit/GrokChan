@@ -97,6 +97,23 @@ Some Cloudflare MCP / API helpers **redact** secret values into placeholders whe
 
 Local: copy `.dev.vars.example` → `.dev.vars` (git-ignored).
 
+### Stack-chan device endpoints (M1, experimental)
+
+| Name | Kind | Purpose | Default |
+| --- | --- | --- | --- |
+| `STACKCHAN_ENABLED` | var | `"true"` enables `POST /mcp` and `GET /ws/device` (WebSocket). Otherwise both return 404. | off |
+| `TTS_PROVIDER` | var | `mock` (only provider in M1). Unset → `speak` fails with `tts_failed`. | unset |
+| `DEVICE_CMD_TIMEOUT_MS` | var | Wait for a device response (speak: 5000) | `3000` |
+| `HELLO_TIMEOUT_MS` | var | Close sockets that skip `session.hello` | `10000` |
+| `DEVICE_RATE_LIMIT_PER_SEC` | var | Per-device command limit (`emergency_stop` exempt) | `20` |
+| `AUDIO_CHUNK_DELAY_MS` | var | Extra delay between audio frames (tests/debug) | `0` |
+| `PAN_MIN` `PAN_MAX` `TILT_MIN` `TILT_MAX` | var | Soft limits for `move_head` | `-90 90 0 60` |
+| `VOLUME_CAP` | var | Max volume for `speak` / `set_volume` | `70` |
+
+**There is no auth on `/mcp` and `/ws/device` yet** (see `TODO(auth)` in `src/index.ts`), so they are off by default. Only turn `STACKCHAN_ENABLED` on locally or behind your own access control. Design: [`../docs/mcp-plan.md`](../docs/mcp-plan.md) ([中文](../docs/mcp-plan.zh-CN.md)).
+
+M1 tools: `list_devices`, `get_device_status`, `move_head`, `reset_pose`, `set_expression`, `show_text`, `set_led`, `speak`, `stop_audio`, `set_volume`, `emergency_stop`. The device speaks JSON-RPC 2.0 (`grokchan-rpc/1`) over `/ws/device?device_id=<id>`; audio goes down as binary frames.
+
 ## Grok Bot routine tips
 
 1. Trigger type: **Webhook**.
@@ -110,9 +127,11 @@ Local: copy `.dev.vars.example` → `.dev.vars` (git-ignored).
 ```bash
 cp .dev.vars.example .dev.vars
 npm run dev          # http://localhost:8787
-npm test             # mock webhook + real wrangler dev (fake secrets)
+npm test             # mock webhook + mock Stack-chan device + real wrangler dev (fake secrets)
 npm run typecheck
 ```
+
+Requires **Node ≥ 22** (wrangler 4). Tests: `test/e2e.test.ts` (chat), `test/mcp.unit.test.ts` (MCP layer against an in-memory gateway), `test/device.e2e.test.ts` (MCP ⇄ DeviceHub ⇄ `test/mock-device.ts` over real WebSockets; configurable delay / error / ignore / disconnect).
 
 Local `PUBLIC_ORIGIN` is localhost — a real Grok Bot cloud routine cannot reach it. Use a tunnel (`cloudflared`) for live routine debugging.
 
@@ -123,6 +142,9 @@ bridge/
   src/
     index.ts          HTTP Worker
     hub.ts            ChatHub Durable Object
+    device/           DeviceHub (1 DO per device, JSON-RPC WS), DeviceRegistry, protocol, gateway
+    mcp/              Streamable HTTP MCP server + the 11 tool definitions
+    tts/              TtsProvider interface + mock
     page.html         Passcode-gated chat UI
     agents/
       types.ts        Provider interface

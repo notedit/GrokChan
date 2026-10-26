@@ -13,11 +13,27 @@ PUBLIC_ORIGIN = "https://YOUR_SUBDOMAIN.workers.dev"
 AGENT_PROVIDER = "grokbot"
 GROK_WEBHOOK_HEADER = "Authorization"
 GROK_WEBHOOK_SCHEME = "Bearer"
+# Stack-chan endpoints (/mcp, /ws/device) are OFF by default: M1 has no auth on
+# them yet. Set to "true" only for local dev / tests (wrangler dev --var).
+# STACKCHAN_ENABLED = "false"
+# TTS_PROVIDER = "mock"   # M1 ships only the mock provider; unset -> speak fails with tts_failed
 
 [[durable_objects.bindings]]
 name = "HUB"
 class_name = "ChatHub"
 
+[[durable_objects.bindings]]
+name = "DEVICE"
+class_name = "DeviceHub"
+
+[[durable_objects.bindings]]
+name = "REGISTRY"
+class_name = "DeviceRegistry"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["ChatHub"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["DeviceHub", "DeviceRegistry"]

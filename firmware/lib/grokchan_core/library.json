@@ -1,0 +1,12 @@
+{
+  "name": "grokchan_core",
+  "version": "0.1.0",
+  "description": "Hardware-independent core of the GrokChan device firmware: grokchan-rpc/1 (JSON-RPC 2.0) client, dispatch, dedup, audio stream logic. Compiles on the host.",
+  "license": "MIT",
+  "frameworks": "*",
+  "platforms": "*",
+  "dependencies": [
+    { "name": "ArduinoJson", "version": "^7.2.0" }
+  ],
+  "build": { "flags": ["-std=gnu++17"] }
+}

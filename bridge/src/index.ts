@@ -1,10 +1,16 @@
 import pageHtml from "./page.html";
 import type { ChatHub } from "./hub";
 import { getAgentProvider } from "./agents";
+import { createDoGateway, type GatewayEnv } from "./device/do-gateway";
+import { DEVICE_ID_RE } from "./device/protocol";
+import { handleMcp } from "./mcp/server";
+import { DEFAULT_LIMITS, type Limits } from "./mcp/tools";
 
 export { ChatHub } from "./hub";
+export { DeviceHub } from "./device/hub";
+export { DeviceRegistry } from "./device/registry";
 
-export interface Env {
+export interface Env extends Partial<GatewayEnv> {
   HUB: DurableObjectNamespace<ChatHub>;
   PUBLIC_ORIGIN: string;
   /** Active agent: "grokbot" (default) or "muse" (stub). */
@@ -19,6 +25,50 @@ export interface Env {
   TOKEN_TTL_SECONDS?: string; // (600)
   WEBHOOK_MAX_ATTEMPTS?: string; // (4)
   RETRY_BASE_MS?: string; // (500)
+  /** Stack-chan device endpoints (/mcp, /ws/device). Off unless "true": M1 has NO auth on them yet. */
+  STACKCHAN_ENABLED?: string;
+  /** Soft limits for the MCP tools (defaults: pan -90..90, tilt 0..60, volume cap 70). */
+  PAN_MIN?: string;
+  PAN_MAX?: string;
+  TILT_MIN?: string;
+  TILT_MAX?: string;
+  VOLUME_CAP?: string;
+}
+
+function limitsFromEnv(env: Env): Limits {
+  const n = (v: string | undefined, d: number) => (v !== undefined && v !== "" && Number.isFinite(Number(v)) ? Number(v) : d);
+  return {
+    ...DEFAULT_LIMITS,
+    panMin: n(env.PAN_MIN, DEFAULT_LIMITS.panMin),
+    panMax: n(env.PAN_MAX, DEFAULT_LIMITS.panMax),
+    tiltMin: n(env.TILT_MIN, DEFAULT_LIMITS.tiltMin),
+    tiltMax: n(env.TILT_MAX, DEFAULT_LIMITS.tiltMax),
+    volumeCap: n(env.VOLUME_CAP, DEFAULT_LIMITS.volumeCap),
+  };
+}
+
+function gatewayEnv(env: Env): GatewayEnv | null {
+  return env.DEVICE && env.REGISTRY ? (env as GatewayEnv) : null;
+}
+
+/**
+ * Stack-chan endpoints. TODO(auth): /mcp needs a bearer key (MCP_API_KEY) and
+ * /ws/device a per-device token before this is exposed; until then both are
+ * disabled unless STACKCHAN_ENABLED=true.
+ */
+async function handleStackchan(req: Request, env: Env, url: URL): Promise<Response> {
+  const genv = gatewayEnv(env);
+  if (env.STACKCHAN_ENABLED !== "true" || !genv) return new Response("Not Found", { status: 404 });
+  if (url.pathname === "/mcp") {
+    return handleMcp(req, { gateway: createDoGateway(genv), limits: limitsFromEnv(env) }, env.PUBLIC_ORIGIN?.replace(/\/+$/, ""));
+  }
+  // /ws/device
+  if (req.headers.get("Upgrade")?.toLowerCase() !== "websocket") return new Response("Expected WebSocket", { status: 426 });
+  const deviceId = req.headers.get("Device-Id") ?? url.searchParams.get("device_id") ?? "";
+  if (!DEVICE_ID_RE.test(deviceId)) return json({ error: "bad_device_id" }, 400);
+  const headers = new Headers(req.headers);
+  headers.set("x-device-id", deviceId);
+  return genv.DEVICE.getByName(deviceId).fetch(new Request(req, { headers }));
 }
 
 const SESSION_RE = /^[A-Za-z0-9_-]{8,64}$/;
@@ -233,6 +283,14 @@ export default {
     if (url.pathname === "/" || url.pathname === "/index.html") {
       if (req.method !== "GET" && req.method !== "HEAD") return new Response("Method Not Allowed", { status: 405 });
       return pageResponse();
+    }
+    if (url.pathname === "/mcp" || url.pathname === "/ws/device") {
+      try {
+        return await handleStackchan(req, env, url);
+      } catch (e) {
+        console.log("unhandled stackchan error:", e instanceof Error ? e.message : String(e));
+        return json({ error: "internal_error" }, 500);
+      }
     }
     if (url.pathname.startsWith("/api/")) {
       try {
