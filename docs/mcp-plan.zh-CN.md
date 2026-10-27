@@ -1,6 +1,8 @@
 # MCP 能力规划：让 Grok 控制 M5Stack Stack-chan
+> **2026-10-27**：音频 / 信令 / MCP 已合并到 [audio-sdk-plan.zh-CN.md](audio-sdk-plan.zh-CN.md)（v0.3，S0→S1 在 bridge 落地）。协议名 **`mediasession-rpc/1`**。本文工具清单仍作参考；实现以一体化草案与 `bridge/src/device/protocol.ts` 为准。
+>
 
-> 状态：**规划草案（v0.1，2026-10-26）**。本文只是设计，尚无对应实现；`bridge/` 里目前只有「网页聊天 ↔ Grok Bot webhook」，`firmware/` 仍是占位。
+> 状态：**已被 audio-sdk-plan 吸收（工具清单仍有效）**。M1 已在 `bridge/` + `firmware/` 实现（`STACKCHAN_ENABLED`）。
 > 英文简版：[mcp-plan.md](mcp-plan.md)。相关文档：[architecture.zh-CN.md](architecture.zh-CN.md) · [bridge/README.md](../bridge/README.md) · [firmware/README.md](../firmware/README.md)。
 > 标注「**待确认**」的地方是资料互相矛盾、或我没能在官方来源里查到的内容，开工前要实机/官方文档核对，**不要当成已验证事实**。
 
@@ -289,7 +291,7 @@
 
 M5Stack 官方 StackChan 固件（ESP-IDF，MIT 头）已内置 xiaozhi 的 MCP 服务器抽象，并注册了：`self.robot.get_head_angles`、`self.robot.set_head_angles`（yaw -128…128、pitch 0…90、speed 100…1000）、`self.robot.set_led_color`（左右两组灯，0…168）、`self.robot.create_reminder` / `get_reminders` / `stop_reminder`。社区项目 [kisaragi-mochi/stackchan-mcp](https://github.com/kisaragi-mochi/stackchan-mcp) 另外把 `take_photo`、`get_touch_state`、`set_avatar`、`set_blink`、`set_mouth` 等映射到 `self.camera.*`、`self.touch.*`、`self.avatar.*`（基于 xiaozhi-esp32 的自定义板，而非官方出厂固件）。我们的工具名**不照搬**这套命名（给 LLM 看的名字应简洁、不带 `self.`），但参数范围、单位尽量与之对齐，见上文。
 
-## 3. 设备 ↔ bridge 的 WebSocket 协议（JSON-RPC 2.0，`grokchan-rpc/1`）
+## 3. 设备 ↔ bridge 的 WebSocket 协议（JSON-RPC 2.0，`mediasession-rpc/1`）
 
 > **用户决策（2026-10-26）**：设备与 bridge 之间的 WebSocket 协议使用 **JSON-RPC 2.0**，取代早先草案里自定义的 `hello/cmd/ack/state/event/audio_begin/audio_end` 帧。
 
@@ -319,7 +321,7 @@ GET wss://<PUBLIC_ORIGIN>/ws/device?device_id=sc-ab12cd      （M1 先不鉴权�
 1. 连接后设备**必须在 10 s 内**发 `session.hello`（**request**，因为设备需要拿到会话参数）：
    ```jsonc
    { "jsonrpc": "2.0", "id": "d_1", "method": "session.hello",
-     "params": { "protocol": "grokchan-rpc/1", "device_id": "sc-ab12cd", "fw": "0.1.0", "hw": "m5stack-stackchan",
+     "params": { "protocol": "mediasession-rpc/1", "device_id": "sc-ab12cd", "fw": "0.1.0", "hw": "m5stack-stackchan",
                  "caps": ["head","led","display","speaker"],
                  "limits": { "pan": [-90, 90], "tilt": [0, 60], "volume_cap": 70 },
                  "expressions": ["neutral","happy","…"],
@@ -488,7 +490,7 @@ bridge 自己产生的错误（不经设备）：`device_offline`、`device_not_
 
 ### 3.7 其它协议细节
 
-- 版本：`session.hello.params.protocol` = `grokchan-rpc/1`，bridge 对不认识的主版本返回 `-32602` 并关闭（4009）。
+- 版本：`session.hello.params.protocol` = `mediasession-rpc/1`，bridge 对不认识的主版本返回 `-32602` 并关闭（4009）。
 - 关闭码：4000 replaced、4001 hello 超时/缺失、4003 鉴权失败（上线鉴权后）、4008 速率超限、4009 协议错误。
 - 设备时钟不可信，一律以 `server_time` 为准；`ttl_ms` 是**相对时间**。
 - 设备侧 JSON 解析：ESP-IDF 自带 cJSON；官方固件使用的 JSON 库**待确认**。单条 JSON 消息建议 ≤ 8 KB（`show_text` 文本已限长）。
@@ -615,7 +617,7 @@ bridge 自己产生的错误（不经设备）：`device_offline`、`device_not_
 1. **Grok Bot 能否挂自定义远程 MCP server？** 支持的鉴权方式（自定义 Bearer 头 / OAuth / 无）？这决定 `/mcp` 的鉴权形态。若不支持，替代方案：在 Grok Bot routine 里用 HTTP 工具直接调 bridge 的 REST（我们可以把同样的 tools 暴露成 `POST /api/device/<tool>`）。
 2. **硬件**：用户手上是**官方 M5Stack StackChan（CoreS3 + 官方机身）**，还是**原版 stack-chan 自制（Moddable，SCServo 等）**，还是 xiaozhi 系自定义板？固件路线取决于此。
 3. **固件路线**：基于官方 ESP-IDF 固件扩展（推荐），还是 Arduino/PlatformIO 重写？是否接受 fork 官方仓库？
-4. **是否还要兼容官方固件的 xiaozhi MCP 方言**？**已决策**：设备↔bridge 用自有的 JSON-RPC 2.0 协议（`grokchan-rpc/1`，§3）。剩余问题是：是否在 bridge 侧再写一个**可选适配器**，把 `device.*` 翻译成官方 `{"type":"mcp","payload":{…}}` 里的 `tools/call self.robot.*`（少改固件，但绑定 xiaozhi 配对流程，且官方没有音频/事件语义）？默认**不做**，M2 后再评估。
+4. **是否还要兼容官方固件的 xiaozhi MCP 方言**？**已决策**：设备↔bridge 用自有的 JSON-RPC 2.0 协议（`mediasession-rpc/1`，§3）。剩余问题是：是否在 bridge 侧再写一个**可选适配器**，把 `device.*` 翻译成官方 `{"type":"mcp","payload":{…}}` 里的 `tools/call self.robot.*`（少改固件，但绑定 xiaozhi 配对流程，且官方没有音频/事件语义）？默认**不做**，M2 后再评估。
 5. **MCP 实现方式**（M1 实现先用手写最小 MCP JSON-RPC 处理器，保持零运行时依赖，可随时换成 `createMcpHandler`）：用 `agents`+`@modelcontextprotocol/server`+`zod`（打破 bridge「零运行时依赖」的现状），还是手写最小 JSON-RPC？
 6. **中文 TTS 选哪家**：Workers AI MeloTTS（免额外密钥，质量待测）/ 外部商业 TTS（质量好，需 key 与计费）？是否需要特定音色/情感？
 7. **主语言与字库**：设备界面/气泡以中文为主吗？字库内置多大（常用 3500 字？）还是动态字形下发？

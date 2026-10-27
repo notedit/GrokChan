@@ -1,6 +1,6 @@
 # GrokChan 固件（M5Stack StackChan / CoreS3）
 
-M5Stack StackChan（CoreS3 + 舵机底座）上的 **JSON-RPC 2.0 WebSocket 客户端**。固件连接 `bridge/` Worker 的 `/ws/device`，按 `grokchan-rpc/1` 协议（见 `bridge/src/device/protocol.ts`、`docs/mcp-plan.zh-CN.md`）：
+M5Stack StackChan（CoreS3 + 舵机底座）上的 **JSON-RPC 2.0 WebSocket 客户端**。固件连接 `bridge/` Worker 的 `/ws/device`，按 `mediasession-rpc/1` 协议（见 `bridge/src/device/protocol.ts`、`docs/audio-sdk-plan.zh-CN.md`、`docs/mcp-plan.zh-CN.md`）：
 
 - 连接后发送 `session.hello` 请求，收到 `session_id / heartbeat_s / audio` 后进入 Ready；
 - 响应 bridge→设备的命令：`device.move_head`、`device.reset_pose`、`device.set_expression`、`device.show_text`、`device.set_led`、`device.speak`、`device.stop_audio`、`device.set_volume`、`device.emergency_stop`、`device.get_status`，返回 result 或带 bridge 错误码的 error（含 `_meta.deduplicated` 重放去重：最近 32 个 id/key，60 s）；

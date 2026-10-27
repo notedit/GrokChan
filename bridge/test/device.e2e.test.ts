@@ -5,7 +5,7 @@ import { MockDevice, type MockOptions } from "./mock-device";
 import { mcpClient } from "./mcp-client";
 import { FRAME_DOWNLINK_AUDIO, PING_TEXT } from "../src/device/protocol";
 
-// Real workerd (wrangler dev) + a WebSocket mock device speaking grokchan-rpc/1.
+// Real workerd (wrangler dev) + a WebSocket mock device speaking mediasession-rpc/1.
 const VARS = { STACKCHAN_ENABLED: "true", TTS_PROVIDER: "mock", DEVICE_CMD_TIMEOUT_MS: "400", HELLO_TIMEOUT_MS: "1500", DEVICE_RATE_LIMIT_PER_SEC: "1000" };
 
 let w: Worker; // main worker
@@ -118,13 +118,13 @@ describe("device WebSocket handshake (JSON-RPC session.hello)", () => {
     expect(await upgradeStatus(w.base, "/ws/device")).toBe(400);
     expect(await upgradeStatus(w.base, "/ws/device?device_id=ok_id", false)).toBe(426);
   });
-  it("unsupported protocol / wrong device id in hello -> error response and close 4009", async () => {
+  it("unsupported protocol / wrong device id in hello -> error response and close 4002", async () => {
     const d = new MockDevice(w.base, did());
     devices.push(d);
     await d.connect();
     const r = await d.request("session.hello", { ...d.helloParams(), protocol: "other/9" });
     expect(r.error.code).toBe(-32602);
-    expect((await d.waitClosed()).code).toBe(4009);
+    expect((await d.waitClosed()).code).toBe(4002);
     const d2 = new MockDevice(w.base, did());
     devices.push(d2);
     await d2.connect();

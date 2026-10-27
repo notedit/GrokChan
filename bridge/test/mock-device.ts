@@ -1,4 +1,4 @@
-import { decodeFrame, type DecodedFrame } from "../src/device/protocol";
+import { decodeFrame, PROTOCOL, type DecodedFrame } from "../src/device/protocol";
 import { sleep, waitFor } from "./harness";
 
 export type LogEntry =
@@ -24,7 +24,7 @@ export interface MockOptions {
   dedup?: boolean;
 }
 
-/** A fake Stack-chan: speaks grokchan-rpc/1 over a real WebSocket to `wrangler dev`. */
+/** A fake Stack-chan: speaks mediasession-rpc/1 over a real WebSocket to `wrangler dev`. */
 export class MockDevice {
   ws!: WebSocket;
   log: LogEntry[] = [];
@@ -56,7 +56,7 @@ export class MockDevice {
 
   helloParams(): Record<string, unknown> {
     return {
-      protocol: "grokchan-rpc/1",
+      protocol: PROTOCOL,
       device_id: this.deviceId,
       fw: "0.1.0-mock",
       hw: "m5stack-stackchan",

@@ -26,7 +26,7 @@ Grok Bot ──MCP (Streamable HTTP, POST /mcp)──▶ bridge Worker ──Web
 
 Every tool takes optional `device_id` and `request_id` (idempotency key, 60 s). Results are `{ok, device_id, command_id, status: accepted|done|queued, result}` or `{ok:false, error:{code,message,retry_after_ms}}`. Reference ranges from the official firmware's `self.robot.set_head_angles`: yaw −128…128, pitch 0…90, speed 100…1000; LED channels 0…168. Defaults are tighter (pan ±90, tilt 0…60; natural ±45); out-of-range values are clamped and reported with `clamped:true`.
 
-## Device ↔ bridge protocol (JSON-RPC 2.0, `grokchan-rpc/1`)
+## Device ↔ bridge protocol (JSON-RPC 2.0, `mediasession-rpc/1`)
 
 > Decision (2026-10-26): the device WebSocket speaks **JSON-RPC 2.0**, replacing the earlier custom `hello/cmd/ack/state/event/audio_begin/audio_end` frames. Details: Chinese doc §3.
 

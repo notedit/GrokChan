@@ -25,7 +25,7 @@ static void test_hello_content() {
   TEST_ASSERT_EQUAL_STRING("d_1", d["id"]);
   TEST_ASSERT_EQUAL_STRING("session.hello", d["method"]);
   JsonObject p = d["params"];
-  TEST_ASSERT_EQUAL_STRING("grokchan-rpc/1", p["protocol"]);
+  TEST_ASSERT_EQUAL_STRING("mediasession-rpc/1", p["protocol"]);
   TEST_ASSERT_EQUAL_STRING("stackchan-test", p["device_id"]);
   TEST_ASSERT_EQUAL_STRING("0.1.0-test", p["fw"]);
   TEST_ASSERT_EQUAL_STRING("m5stack-cores3", p["hw"]);

@@ -9,9 +9,11 @@ import {
   isObject,
   mapDeviceError,
   parseHello,
+  preferPlayFormat,
   PING_TEXT,
   PONG_TEXT,
   RPC,
+  WS_CLOSE,
   rpcError,
   rpcNotification,
   rpcRequest,
@@ -72,10 +74,12 @@ const num = (v: string | undefined, d: number) => {
 };
 
 /**
- * One Durable Object per device (addressed by device id). Holds the device's
- * hibernating WebSocket and speaks JSON-RPC 2.0 (`grokchan-rpc/1`) with it:
- * commands are requests, state/events are notifications, audio is binary
- * frames delimited by audio.begin / audio.end. See docs/mcp-plan.zh-CN.md 3.
+ * SessionHub (still named DeviceHub): one Durable Object per device.
+ * Holds the hibernating WebSocket and speaks JSON-RPC 2.0
+ * (`mediasession-rpc/1`): commands are requests, state/events are
+ * notifications, audio is binary frames delimited by audio.begin / audio.end
+ * (S1; stream.open is S2). Serves both MCP (via DeviceGateway) and the
+ * device socket. See docs/audio-sdk-plan.zh-CN.md.
  *
  * TODO(auth): authenticate the WebSocket handshake with a per-device token
  * (hashed at rest) in the Worker router before it reaches this object.
@@ -120,7 +124,7 @@ export class DeviceHub extends DurableObject<DeviceEnv> {
       if (!a || a.hello) continue;
       if (a.connected_at + timeout <= now) {
         try {
-          ws.close(4001, "hello timeout");
+          ws.close(WS_CLOSE.HELLO_TIMEOUT, "hello timeout");
         } catch {}
         this.failPending(ws, "device_offline", "connection closed before session.hello");
       } else next = Math.min(next, a.connected_at + timeout);
@@ -179,7 +183,7 @@ export class DeviceHub extends DurableObject<DeviceEnv> {
     if (!parsed.ok) {
       this.send(ws, rpcError(req.id, RPC.INVALID_PARAMS, parsed.message));
       try {
-        ws.close(4009, "protocol error");
+        ws.close(WS_CLOSE.PROTOCOL_MISMATCH, "protocol error");
       } catch {}
       return;
     }
@@ -191,12 +195,12 @@ export class DeviceHub extends DurableObject<DeviceEnv> {
       if (oa?.hello) {
         this.failPending(other, "device_offline", "replaced by a newer connection");
         try {
-          other.close(4000, "replaced");
+          other.close(WS_CLOSE.REPLACED, "replaced");
         } catch {}
       }
     }
     const sessionId = randId("s_");
-    const chosen = hello.play[0]!;
+    const chosen = preferPlayFormat(hello.play);
     const audio = { format: chosen.format, sample_rate: chosen.sample_rate, channels: chosen.channels ?? 1, chunk_bytes: Math.min(hello.max_chunk_bytes, 4096) };
     ws.serializeAttachment({ ...att, hello: true, session_id: sessionId } satisfies Attachment);
     await this.ctx.storage.put({ hello, last_seen: Date.now(), device_id: att.device_id });

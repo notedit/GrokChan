@@ -1,4 +1,4 @@
-// GrokChan device protocol constants (grokchan-rpc/1). Mirrors bridge/src/device/protocol.ts
+// GrokChan device protocol constants (mediasession-rpc/1). Mirrors bridge/src/device/protocol.ts
 // and docs/mcp-plan.zh-CN.md section 3. Keep both in sync.
 #pragma once
 #include <cstddef>
@@ -6,7 +6,7 @@
 
 namespace gc {
 
-constexpr const char* kProtocol = "grokchan-rpc/1";
+constexpr const char* kProtocol = "mediasession-rpc/1";
 
 // JSON-RPC error codes (bridge: RPC in protocol.ts).
 enum RpcCode : int {
@@ -28,6 +28,15 @@ enum RpcCode : int {
   kPayloadTooLarge = -32010,
   kQuietHours = -32011,
   kStreamError = -32012,
+  kInterrupted = -32013,
+};
+
+// WebSocket close codes (mirror bridge WS_CLOSE).
+enum WsClose : int {
+  kCloseReplaced = 4000,
+  kCloseHelloTimeout = 4001,
+  kCloseProtocolMismatch = 4002,
+  kCloseAuthFailed = 4003,
 };
 
 // Short error.message names (doc 3.6).

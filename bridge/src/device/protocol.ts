@@ -1,10 +1,15 @@
 /**
- * Device <-> bridge wire protocol: JSON-RPC 2.0 over WebSocket (`grokchan-rpc/1`).
- * Spec: docs/mcp-plan.zh-CN.md section 3. Pure helpers, no Workers APIs, so
- * they are shared by the Durable Object, the MCP layer and the tests.
+ * Device/session wire protocol: JSON-RPC 2.0 over WebSocket (`mediasession-rpc/1`).
+ * Same kernel for MCP tools and device control: MCP tool schemas and `device.*`
+ * methods share DEVICE_METHODS below. Spec: docs/audio-sdk-plan.zh-CN.md,
+ * docs/mcp-plan.zh-CN.md §3. Pure helpers (no Workers APIs).
+ *
+ * S1 keeps audio delimited by audio.begin / binary frames / audio.end
+ * (no stream.open yet — deferred to S2). Playback path uses pcm_s16le;
+ * opus remains in AudioFormat for negotiation only.
  */
 
-export const PROTOCOL = "grokchan-rpc/1";
+export const PROTOCOL = "mediasession-rpc/1";
 
 export type RpcId = string | number;
 
@@ -52,7 +57,36 @@ export const RPC = {
   PAYLOAD_TOO_LARGE: -32010,
   QUIET_HOURS: -32011,
   STREAM_ERROR: -32012,
+  INTERRUPTED: -32013,
 } as const;
+
+/** WebSocket close codes (docs/audio-sdk-plan.zh-CN.md §3.6). */
+export const WS_CLOSE = {
+  REPLACED: 4000,
+  HELLO_TIMEOUT: 4001,
+  PROTOCOL_MISMATCH: 4002,
+  AUTH_FAILED: 4003, // reserved; auth not implemented yet
+} as const;
+
+/**
+ * Single source: MCP tool name → device JSON-RPC method.
+ * list_devices has no device RPC (registry only). speak adds TTS + audio frames
+ * around device.speak. Keep in sync with buildTools() in mcp/tools.ts.
+ */
+export const DEVICE_METHODS = {
+  get_device_status: "device.get_status",
+  move_head: "device.move_head",
+  reset_pose: "device.reset_pose",
+  set_expression: "device.set_expression",
+  show_text: "device.show_text",
+  set_led: "device.set_led",
+  speak: "device.speak",
+  stop_audio: "device.stop_audio",
+  set_volume: "device.set_volume",
+  emergency_stop: "device.emergency_stop",
+} as const;
+export type DeviceMethodTool = keyof typeof DEVICE_METHODS;
+
 
 /** Device JSON-RPC error code -> MCP-side tool error code (doc 3.6). */
 export function mapDeviceError(code: number): string {
@@ -82,6 +116,8 @@ export function mapDeviceError(code: number): string {
       return "payload_too_large";
     case RPC.STREAM_ERROR:
       return "stream_error";
+    case RPC.INTERRUPTED:
+      return "interrupted";
     case RPC.INVALID_PARAMS:
     case RPC.INVALID_REQUEST:
       return "invalid_args";
@@ -185,6 +221,11 @@ export interface PlayCapability {
   channels?: number;
 }
 export const DEFAULT_CHUNK_BYTES = 4096;
+
+/** S1: prefer pcm_s16le from negotiated play list; fall back to first entry. */
+export function preferPlayFormat(play: readonly PlayCapability[]): PlayCapability {
+  return play.find((p) => p.format === "pcm_s16le") ?? play[0] ?? { format: "pcm_s16le", sample_rate: 16000, channels: 1 };
+}
 
 /** Device hello params (validated subset). */
 export interface HelloInfo {

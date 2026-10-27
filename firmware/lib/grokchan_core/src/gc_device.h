@@ -1,4 +1,4 @@
-// The grokchan-rpc/1 device client: session handshake, command dispatch, state/event
+// The mediasession-rpc/1 device client: session handshake, command dispatch, state/event
 // notifications, audio stream handling and reconnect. Hardware-free (see gc_hal.h).
 #pragma once
 #include <ArduinoJson.h>

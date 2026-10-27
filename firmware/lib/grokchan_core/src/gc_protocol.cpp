@@ -22,6 +22,7 @@ const char* rpcCodeName(int code) {
     case kPayloadTooLarge: return "payload_too_large";
     case kQuietHours: return "quiet_hours";
     case kStreamError: return "stream_error";
+    case kInterrupted: return "interrupted";
     default: return "error";
   }
 }

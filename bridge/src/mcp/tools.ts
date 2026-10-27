@@ -1,4 +1,5 @@
 import type { DeviceGateway, DeviceOutcome, DeviceSummary } from "../device/gateway";
+import { DEVICE_METHODS } from "../device/protocol";
 
 /** Soft limits enforced by the bridge. The device re-checks against its own hard limits (-32001). */
 export interface Limits {
@@ -213,7 +214,7 @@ export function buildTools(): ToolDef[] {
         const w = motionWait(args);
         const out = await ctx.gateway.call(id, {
           tool: "move_head",
-          method: "device.move_head",
+          method: DEVICE_METHODS.move_head,
           params: { ...(pan !== undefined ? { pan } : {}), ...(tilt !== undefined ? { tilt } : {}), speed, relative, wait: w.wait },
           ...(w.timeout_ms ? { timeout_ms: w.timeout_ms } : {}),
           ...(requestId(args) ? { request_id: requestId(args)! } : {}),
@@ -234,7 +235,7 @@ export function buildTools(): ToolDef[] {
         const params: Record<string, unknown> = { reset_face: optBool(args, "reset_face") ?? true, wait: w.wait };
         if (speed !== undefined) params.speed = clamp(Math.round(speed), ctx.limits.speedMin, ctx.limits.speedMax);
         return outcomeToEnvelope(
-          await ctx.gateway.call(id, { tool: "reset_pose", method: "device.reset_pose", params, wait: w.wait, ...(w.timeout_ms ? { timeout_ms: w.timeout_ms } : {}), ...(requestId(args) ? { request_id: requestId(args)! } : {}) }),
+          await ctx.gateway.call(id, { tool: "reset_pose", method: DEVICE_METHODS.reset_pose, params, wait: w.wait, ...(w.timeout_ms ? { timeout_ms: w.timeout_ms } : {}), ...(requestId(args) ? { request_id: requestId(args)! } : {}) }),
           (r) => ({ pan: num(r.pan) ?? 0, tilt: num(r.tilt) ?? 0 }),
         );
       },
@@ -272,7 +273,7 @@ export function buildTools(): ToolDef[] {
             ...(lt !== undefined ? { tilt: Math.round(clamp(lt, ctx.limits.tiltMin, ctx.limits.tiltMax)) } : {}),
           };
         }
-        return outcomeToEnvelope(await ctx.gateway.call(id, { tool: "set_expression", method: "device.set_expression", params, ...(requestId(args) ? { request_id: requestId(args)! } : {}) }), (r) => ({
+        return outcomeToEnvelope(await ctx.gateway.call(id, { tool: "set_expression", method: DEVICE_METHODS.set_expression, params, ...(requestId(args) ? { request_id: requestId(args)! } : {}) }), (r) => ({
           expression: typeof r.expression === "string" ? r.expression : expression,
           applied: true,
           ...(typeof r.fallback === "string" ? { fallback: r.fallback } : {}),
@@ -302,7 +303,7 @@ export function buildTools(): ToolDef[] {
         const size = optEnum(args, "size", TEXT_SIZES);
         params.position = position ?? "bubble";
         if (size) params.size = size;
-        return outcomeToEnvelope(await ctx.gateway.call(id, { tool: "show_text", method: "device.show_text", params, ...(requestId(args) ? { request_id: requestId(args)! } : {}) }), (r) => ({
+        return outcomeToEnvelope(await ctx.gateway.call(id, { tool: "show_text", method: DEVICE_METHODS.show_text, params, ...(requestId(args) ? { request_id: requestId(args)! } : {}) }), (r) => ({
           shown: r.shown !== false,
           truncated: r.truncated === true,
         }));
@@ -339,7 +340,7 @@ export function buildTools(): ToolDef[] {
         } else throw new ArgError('color must be "#RRGGBB" or {r,g,b}');
         const params: Record<string, unknown> = { ...rgb, side, mode, brightness };
         if (duration !== undefined) params.duration_ms = duration;
-        return outcomeToEnvelope(await ctx.gateway.call(id, { tool: "set_led", method: "device.set_led", params, ...(requestId(args) ? { request_id: requestId(args)! } : {}) }), (r) => ({
+        return outcomeToEnvelope(await ctx.gateway.call(id, { tool: "set_led", method: DEVICE_METHODS.set_led, params, ...(requestId(args) ? { request_id: requestId(args)! } : {}) }), (r) => ({
           applied_rgb: isObj(r.applied_rgb) ? r.applied_rgb : rgb,
           clamped: r.clamped === true,
         }));
@@ -401,7 +402,7 @@ export function buildTools(): ToolDef[] {
         const streamId = intIn(args, "stream_id", 1, 65535);
         const params: Record<string, unknown> = { clear_queue: optBool(args, "clear_queue") ?? true };
         if (streamId !== undefined) params.stream_id = streamId;
-        return outcomeToEnvelope(await ctx.gateway.call(id, { tool: "stop_audio", method: "device.stop_audio", params, ...(requestId(args) ? { request_id: requestId(args)! } : {}) }), (r) => ({
+        return outcomeToEnvelope(await ctx.gateway.call(id, { tool: "stop_audio", method: DEVICE_METHODS.stop_audio, params, ...(requestId(args) ? { request_id: requestId(args)! } : {}) }), (r) => ({
           stopped: Array.isArray(r.stopped) ? r.stopped : [],
           cleared: num(r.cleared) ?? 0,
         }));
@@ -421,7 +422,7 @@ export function buildTools(): ToolDef[] {
         const params: Record<string, unknown> = { persist: optBool(args, "persist") ?? false };
         if (volume !== undefined) params.volume = volume;
         if (mute !== undefined) params.mute = mute;
-        return outcomeToEnvelope(await ctx.gateway.call(id, { tool: "set_volume", method: "device.set_volume", params, ...(requestId(args) ? { request_id: requestId(args)! } : {}) }), (r) => ({
+        return outcomeToEnvelope(await ctx.gateway.call(id, { tool: "set_volume", method: DEVICE_METHODS.set_volume, params, ...(requestId(args) ? { request_id: requestId(args)! } : {}) }), (r) => ({
           volume: num(r.volume) ?? volume ?? null,
           muted: typeof r.muted === "boolean" ? r.muted : (mute ?? false),
           clamped: volume !== undefined && volume !== vol,
@@ -437,7 +438,7 @@ export function buildTools(): ToolDef[] {
         annotations: { destructiveHint: false, idempotentHint: true },
       },
       async (_args, id, ctx) =>
-        outcomeToEnvelope(await ctx.gateway.call(id, { tool: "emergency_stop", method: "device.emergency_stop", params: {} }), (r) => ({
+        outcomeToEnvelope(await ctx.gateway.call(id, { tool: "emergency_stop", method: DEVICE_METHODS.emergency_stop, params: {} }), (r) => ({
           motion_halted: r.motion_halted !== false,
           audio_stopped: r.audio_stopped !== false,
         })),

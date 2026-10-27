@@ -110,9 +110,9 @@ Local: copy `.dev.vars.example` → `.dev.vars` (git-ignored).
 | `PAN_MIN` `PAN_MAX` `TILT_MIN` `TILT_MAX` | var | Soft limits for `move_head` | `-90 90 0 60` |
 | `VOLUME_CAP` | var | Max volume for `speak` / `set_volume` | `70` |
 
-**There is no auth on `/mcp` and `/ws/device` yet** (see `TODO(auth)` in `src/index.ts`), so they are off by default. Only turn `STACKCHAN_ENABLED` on locally or behind your own access control. Design: [`../docs/mcp-plan.md`](../docs/mcp-plan.md) ([中文](../docs/mcp-plan.zh-CN.md)).
+**There is no auth on `/mcp` and `/ws/device` yet** (see `TODO(auth)` in `src/index.ts`), so they are off by default. Only turn `STACKCHAN_ENABLED` on locally or behind your own access control. Design: [`../docs/audio-sdk-plan.md`](../docs/audio-sdk-plan.md) ([中文](../docs/audio-sdk-plan.zh-CN.md)); MCP tool list: [`../docs/mcp-plan.md`](../docs/mcp-plan.md).
 
-M1 tools: `list_devices`, `get_device_status`, `move_head`, `reset_pose`, `set_expression`, `show_text`, `set_led`, `speak`, `stop_audio`, `set_volume`, `emergency_stop`. The device speaks JSON-RPC 2.0 (`grokchan-rpc/1`) over `/ws/device?device_id=<id>`; audio goes down as binary frames.
+M1 tools: `list_devices`, `get_device_status`, `move_head`, `reset_pose`, `set_expression`, `show_text`, `set_led`, `speak`, `stop_audio`, `set_volume`, `emergency_stop`. MCP and the device socket share one Hub (`DeviceHub` / SessionHub): JSON-RPC 2.0 (`mediasession-rpc/1`) over `/ws/device?device_id=<id>`; S1 audio is PCM downlink (`audio.begin` / binary frames / `audio.end`; `stream.open` is S2). Tool ↔ method map: `DEVICE_METHODS` in `src/device/protocol.ts`.
 
 ## Grok Bot routine tips
 
