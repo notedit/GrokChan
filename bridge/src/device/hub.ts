@@ -1,11 +1,18 @@
 import { DurableObject } from "cloudflare:workers";
+import { getAgentProvider, resolveAgentId, type AgentEnv } from "../agents";
+import { getAsrProvider } from "../asr";
+import type { ChatHub } from "../hub";
 import { getTtsProvider, TtsError } from "../tts";
+import { VoiceEngine, voiceConfigFromEnv, type DeliverResult, type VoiceHost } from "../voice/engine";
 import type { DeviceCall, DeviceError, DeviceOutcome, SpeakCall } from "./gateway";
 import type { DeviceRegistry } from "./registry";
 import {
   classify,
+  decodeFrame,
   encodeFrame,
   FRAME_DOWNLINK_AUDIO,
+  FRAME_UPLINK_AUDIO,
+  UPLINK,
   isObject,
   mapDeviceError,
   parseHello,
@@ -37,6 +44,42 @@ export interface DeviceEnv {
   DEVICE_RATE_LIMIT_PER_SEC?: string;
   /** Test knob: pause between audio chunks (0). */
   AUDIO_CHUNK_DELAY_MS?: string;
+
+  // ---- voice conversation (all optional; voice is off unless ASR_PROVIDER resolves) ----
+  /** "mock" | "workers-ai" (needs an `AI` binding) | a provider added with registerAsrProvider. */
+  ASR_PROVIDER?: string;
+  /** ElevenLabs (TTS_PROVIDER / ASR_PROVIDER = "elevenlabs"). Secret: `wrangler secret put ELEVENLABS_API_KEY`. */
+  ELEVENLABS_API_KEY?: string;
+  ELEVENLABS_VOICE_ID?: string;
+  ELEVENLABS_TTS_MODEL?: string;
+  ELEVENLABS_ASR_MODEL?: string;
+  ELEVENLABS_HOST?: string;
+  ASR_MODEL?: string;
+  AI?: { run(model: string, input: Record<string, unknown>): Promise<unknown> };
+  /** Max single utterance in ms (15000); bytes are derived (16 kHz mono s16le), hard cap 1 MB. */
+  UPLINK_MAX_MS?: string;
+  UPLINK_GRACE_MS?: string;
+  /** No uplink frame for this long mid-utterance -> turn aborted (3000). */
+  UPLINK_IDLE_TIMEOUT_MS?: string;
+  /** event.speech_start without audio.begin for this long -> turn dropped (3000). */
+  UPLINK_BEGIN_TIMEOUT_MS?: string;
+  ASR_TIMEOUT_MS?: string; // (10000)
+  AGENT_REPLY_TIMEOUT_MS?: string; // (60000)
+  VOICE_REPLY_MAX_CHARS?: string; // (1000)
+  VOICE_TURNS_PER_MIN?: string; // (20)
+  PLAYBACK_SLACK_MS?: string; // (3000)
+
+  // ---- forwarding to the agent (same variables as the web chat) ----
+  HUB?: DurableObjectNamespace<ChatHub>;
+  PUBLIC_ORIGIN?: string;
+  AGENT_PROVIDER?: string;
+  GROK_WEBHOOK_URL?: string;
+  GROK_WEBHOOK_KEY?: string;
+  GROK_WEBHOOK_HEADER?: string;
+  GROK_WEBHOOK_SCHEME?: string;
+  WEBHOOK_MAX_ATTEMPTS?: string;
+  RETRY_BASE_MS?: string;
+  TOKEN_TTL_SECONDS?: string;
 }
 
 const DEDUP_WINDOW_MS = 60_000;
@@ -94,6 +137,9 @@ export class DeviceHub extends DurableObject<DeviceEnv> {
   private epoch = 0;
   private rate = { start: 0, count: 0 };
   private seq = 0;
+  private voiceEngine?: VoiceEngine;
+  private helloCache?: HelloInfo;
+  private deviceIdCache = "unknown";
 
   constructor(ctx: DurableObjectState, env: DeviceEnv) {
     super(ctx, env);
@@ -135,7 +181,15 @@ export class DeviceHub extends DurableObject<DeviceEnv> {
   override async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const att = ws.deserializeAttachment() as Attachment | null;
     if (!att) return;
-    if (typeof message !== "string") return; // M1: no device->bridge binary frames (mic/photo are M3)
+    this.deviceIdCache = att.device_id;
+    if (typeof message !== "string") {
+      // Binary: only uplink mic frames from the live, hello'd socket. (photo frames are M3)
+      if (att.hello && ws === this.live()) {
+        const f = decodeFrame(message);
+        if (f && f.type === FRAME_UPLINK_AUDIO && this.voiceEngine) this.voiceEngine.onFrame(f);
+      }
+      return;
+    }
     let parsed: unknown;
     try {
       parsed = JSON.parse(message);
@@ -151,6 +205,8 @@ export class DeviceHub extends DurableObject<DeviceEnv> {
     if (c.kind === "request") return this.onDeviceRequest(ws, att, c.msg);
     if (!att.hello) return; // everything except session.hello is dropped before hello
     if (c.kind === "response") return this.onResponse(ws, c.msg);
+    if (ws !== this.live()) return;
+    if (!this.helloCache) this.helloCache = await this.ctx.storage.get<HelloInfo>("hello");
     return this.onNotification(c.msg);
   }
 
@@ -169,7 +225,7 @@ export class DeviceHub extends DurableObject<DeviceEnv> {
     this.failPending(ws, "device_offline", "device disconnected");
     const att = ws.deserializeAttachment() as Attachment | null;
     if (att?.hello && !this.live()) {
-      this.abortAudio();
+      this.abortAudio("disconnect");
       await this.registry().seen(att.device_id).catch(() => {});
     }
   }
@@ -199,13 +255,20 @@ export class DeviceHub extends DurableObject<DeviceEnv> {
         } catch {}
       }
     }
+    this.voiceEngine?.interrupt("session_replaced"); // a turn never survives a (re)connect
+    this.helloCache = hello;
+    this.deviceIdCache = att.device_id;
     const sessionId = randId("s_");
     const chosen = preferPlayFormat(hello.play);
     const audio = { format: chosen.format, sample_rate: chosen.sample_rate, channels: chosen.channels ?? 1, chunk_bytes: Math.min(hello.max_chunk_bytes, 4096) };
     ws.serializeAttachment({ ...att, hello: true, session_id: sessionId } satisfies Attachment);
     await this.ctx.storage.put({ hello, last_seen: Date.now(), device_id: att.device_id });
     await this.registry().touch({ device_id: att.device_id, caps: hello.caps, ...(hello.fw ? { fw_version: hello.fw } : {}), ...(hello.hw ? { hw: hello.hw } : {}) });
-    this.send(ws, rpcResult(req.id, { session_id: sessionId, server_time: Date.now(), heartbeat_s: HEARTBEAT_S, audio }));
+    const voice = this.voice();
+    const voiceInfo = voice.available
+      ? { voice: { uplink: { format: UPLINK.FORMAT, sample_rate: UPLINK.SAMPLE_RATE, channels: UPLINK.CHANNELS, max_ms: voice.limits.maxMs, max_bytes: voice.limits.maxBytes, idle_timeout_ms: voice.config.uplinkIdleMs } } }
+      : {};
+    this.send(ws, rpcResult(req.id, { session_id: sessionId, server_time: Date.now(), heartbeat_s: HEARTBEAT_S, audio, ...voiceInfo }));
   }
 
   private onResponse(ws: WebSocket, msg: RpcResponse): void {
@@ -231,12 +294,19 @@ export class DeviceHub extends DurableObject<DeviceEnv> {
 
   private onNotification(msg: RpcNotification): void {
     const p = msg.params ?? {};
+    // voice conversation inputs (uplink direction only; downlink audio.begin/end are bridge->device)
+    if (msg.method === "event.speech_start") this.voice().onSpeechStart(p);
+    else if (msg.method === "event.speech_end") this.voice().onSpeechEnd();
+    else if (msg.method === "audio.begin" && p.direction === "uplink") this.voice().onAudioBegin(p);
+    else if (msg.method === "audio.end" && (p.direction === undefined || p.direction === "uplink")) this.voice().onAudioEnd(p);
+    else if (msg.method === "audio.credit") this.voiceEngine?.onCredit(p);
     if (msg.method === "state.update") {
       void this.storeState(p);
     } else if (msg.method === "playback.state") {
       const id = p.stream_id;
       const st = p.state;
       if (typeof id === "number" && typeof st === "string") {
+        this.voiceEngine?.onPlayback(id, st, typeof p.message === "string" ? p.message : undefined);
         const s = this.streams.get(id);
         if (s && (st === "started" || st === "ended" || st === "interrupted" || st === "error")) {
           s.playback = st;
@@ -336,8 +406,14 @@ export class DeviceHub extends DurableObject<DeviceEnv> {
     return (await this.ctx.storage.get<string>("device_id")) ?? "unknown";
   }
 
-  /** Stop bridge-side audio work: abort the active stream and invalidate queued speaks. */
-  private abortAudio(): void {
+  /** Stop all bridge-side audio work: MCP speaks and any voice turn. */
+  private abortAudio(reason: "stop" | "disconnect" = "stop"): void {
+    this.preemptAudio();
+    this.voiceEngine?.interrupt(reason);
+  }
+
+  /** Abort the active MCP speak stream and invalidate queued speaks (does not touch the voice turn). */
+  private preemptAudio(): void {
     this.epoch++;
     const a = this.activeStream;
     if (a) {
@@ -401,6 +477,7 @@ export class DeviceHub extends DurableObject<DeviceEnv> {
         expressions: hello?.expressions ?? [],
         limits: hello?.limits ?? null,
         ...state,
+        ...(this.voiceEngine ? { turn: this.voiceEngine.snapshot() } : {}),
         state_age_ms: stateTs ? Date.now() - stateTs : null,
         ...(lastEvent ? { last_event: lastEvent } : {}),
       },
@@ -485,6 +562,7 @@ export class DeviceHub extends DurableObject<DeviceEnv> {
     const t0 = Date.now();
     if (!this.live()) return this.offline(deviceId);
     if (this.rateLimited()) return { ok: false, device_id: deviceId, error: { code: "rate_limited", message: "too many commands for this device", retry_after_ms: 1000 } };
+    if (this.voiceEngine?.active && !call.interrupt) return { ok: false, device_id: deviceId, error: { code: "busy", message: "a voice conversation turn is in progress (use interrupt:true to cut it)", retry_after_ms: 2000 } };
     if (this.speakQueued >= MAX_QUEUED_SPEAKS) return { ok: false, device_id: deviceId, error: { code: "busy", message: "speak queue is full", retry_after_ms: 2000 } };
     if (call.interrupt) this.abortAudio();
     const epoch = this.epoch;
@@ -616,6 +694,98 @@ export class DeviceHub extends DurableObject<DeviceEnv> {
       ctx.wake.add(check);
       check();
     });
+  }
+
+  // ------------------------------------------------------------------ voice conversation
+
+  private voice(): VoiceEngine {
+    if (!this.voiceEngine) {
+      this.voiceEngine = new VoiceEngine(this.voiceHost(), { asr: () => getAsrProvider(this.env), tts: () => getTtsProvider(this.env) }, voiceConfigFromEnv(this.env as unknown as Record<string, string | undefined>));
+    }
+    return this.voiceEngine;
+  }
+
+  /** Called by the Worker's /api/reply route (via DO RPC): the agent's reply for a voice turn. */
+  async agentReply(turnId: string, text: string): Promise<"accepted" | "stale"> {
+    if (!this.helloCache) this.helloCache = await this.ctx.storage.get<HelloInfo>("hello");
+    if (!this.voiceEngine) return "stale"; // DO was recycled: the turn is gone
+    return this.voiceEngine.onAgentReply(turnId, text);
+  }
+
+  private voiceHost(): VoiceHost {
+    const hub = this;
+    return {
+      get deviceId() {
+        return hub.deviceIdCache;
+      },
+      hello: () => this.helloCache,
+      notify: (method, params) => {
+        const ws = this.live();
+        if (!ws) return;
+        try {
+          this.send(ws, rpcNotification(method, params));
+        } catch {}
+      },
+      sendFrame: (streamId, seq, payload, last) => {
+        const ws = this.live();
+        if (!ws) return;
+        try {
+          ws.send(encodeFrame(FRAME_DOWNLINK_AUDIO, streamId, seq, payload, last));
+        } catch {}
+      },
+      deviceSpeak: async (streamId, text) => {
+        const ws = this.live();
+        if (!ws) return { ok: false, message: "device is not connected" };
+        const r = await this.request(ws, "device.speak", { stream_id: streamId, text: text.slice(0, 500), interrupt: true }, { timeoutMs: this.cmdTimeout("speak"), ttlMs: 10_000 }).done;
+        return r.ok ? { ok: true } : { ok: false, message: r.error.message };
+      },
+      stopDeviceAudio: (streamId) => {
+        const ws = this.live();
+        if (ws) void this.request(ws, "device.stop_audio", { stream_id: streamId }, { timeoutMs: 2000, ttlMs: 2000 }).done;
+      },
+      nextStreamId: () => this.nextStreamId(),
+      preemptAudio: () => this.preemptAudio(),
+      deliver: (t) => this.deliverVoice(t),
+      now: () => Date.now(),
+    };
+  }
+
+  /** Forward a final transcript through the same agent webhook chain as web chat, tagged with the device. */
+  private async deliverVoice(t: { turnId: string; text: string; lang?: string }): Promise<DeliverResult> {
+    const env = this.env;
+    if (!env.HUB || !env.PUBLIC_ORIGIN) return { ok: false, reason: "agent_not_configured", message: "HUB / PUBLIC_ORIGIN missing" };
+    const agentEnv = env as unknown as AgentEnv;
+    if (resolveAgentId(agentEnv) === "grokbot" && (!env.GROK_WEBHOOK_URL || !env.GROK_WEBHOOK_KEY)) return { ok: false, reason: "agent_not_configured", message: "GROK_WEBHOOK_URL/KEY missing" };
+    const deviceId = this.deviceIdCache;
+    const sessionId = `dev_${deviceId}`;
+    const ttlMs = (Number(env.TOKEN_TTL_SECONDS) > 0 ? Number(env.TOKEN_TTL_SECONDS) : 600) * 1000;
+    const chat = env.HUB.getByName("main");
+    const { token, turnId, history } = await chat.begin(sessionId, t.text, ttlMs, `device:${deviceId}:${t.turnId}`);
+    const hello = this.helloCache;
+    const agent = getAgentProvider(agentEnv);
+    const result = await agent.deliver(
+      {
+        session_id: sessionId,
+        message: t.text,
+        history,
+        device: {
+          id: deviceId,
+          modality: "voice",
+          turn_id: t.turnId,
+          ...(hello?.hw ? { hw: hello.hw } : {}),
+          ...(hello?.fw ? { fw: hello.fw } : {}),
+          ...(hello?.caps?.length ? { caps: hello.caps } : {}),
+          ...(t.lang ? { lang: t.lang } : {}),
+        },
+      },
+      { method: "POST", url: `${env.PUBLIC_ORIGIN.replace(/\/+$/, "")}/api/reply/${token}` },
+    );
+    if (!result.ok) {
+      await chat.abort(token, turnId);
+      console.log(`voice: agent ${agent.id} delivery failed, last status ${result.status}`); // never log URL/key
+      return { ok: false, reason: "agent_unavailable", message: `agent status ${result.status}` };
+    }
+    return { ok: true };
   }
 
   private async nextStreamId(): Promise<number> {

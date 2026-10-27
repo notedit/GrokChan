@@ -79,6 +79,8 @@ void DeviceClient::tick() {
   hal_.display.tick(t);
   hal_.led.tick(t);
   player_.tick(t);
+  if (voice_) voice_->tick(t, player_.busy());
+  updateTurnDisplay();
 
   std::string reason;
   if (hal_.head.takeFault(reason)) {
@@ -149,6 +151,8 @@ void DeviceClient::resetSession() {
   state_ = state_ == SessionState::Idle ? state_ : SessionState::WaitRetry;
   motion_.active = false;  // the requester is gone, nobody to answer
   player_.stopAll();
+  if (voice_) voice_->onLinkDown();  // a turn never survives a reconnect (the bridge drops it as well)
+  thinkingFrom_.clear();
   pingOutstanding_ = false;
   sessionId_.clear();
 }
@@ -273,6 +277,11 @@ void DeviceClient::handleResponse(JsonObjectConst msg) {
       scheduleReconnect("audio format");
       return;
     }
+    if (voice_) {
+      JsonObjectConst up = r["voice"]["uplink"].as<JsonObjectConst>();
+      bool has = r["voice"]["uplink"].is<JsonObjectConst>();
+      voice_->onBridgeHello(has, has ? (up["max_ms"] | 0u) : 0u, has ? (up["max_bytes"] | 0u) : 0u);
+    }
     sessionId_ = r["session_id"].is<const char*>() ? r["session_id"].as<const char*>() : "";
     uint32_t hb = r["heartbeat_s"].is<uint32_t>() ? r["heartbeat_s"].as<uint32_t>() : 20;
     heartbeatS_ = std::min<uint32_t>(std::max<uint32_t>(hb, 2), 120);
@@ -313,6 +322,28 @@ void DeviceClient::handleNotification(const std::string& method, JsonObjectConst
     if (!player_.end(id, params["total_chunks"] | 0u, params["total_bytes"] | 0u, complete, now(), e)) log("audio.end: " + e);
     return;
   }
+  if (method == "turn.state") {
+    std::string st = hasParams && params["state"].is<const char*>() ? params["state"].as<const char*>() : "";
+    std::string why = hasParams && params["reason"].is<const char*>() ? params["reason"].as<const char*>() : "";
+    if (voice_) voice_->onTurnState(st, why);
+    updateTurnDisplay();
+    if (voice_) {
+      if (st == "thinking" && thinkingFrom_.empty() && knownExpression("thinking")) { thinkingFrom_ = expression_; setExpressionInternal("thinking"); }
+      else if (st != "thinking" && !thinkingFrom_.empty()) {
+        if (expression_ == "thinking") setExpressionInternal(thinkingFrom_);
+        thinkingFrom_.clear();
+      }
+    }
+    return;
+  }
+  if (method == "stream.error") {
+    uint32_t sid = hasParams && params["stream_id"].is<uint32_t>() ? params["stream_id"].as<uint32_t>() : 0;
+    std::string why = hasParams && params["reason"].is<const char*>() ? params["reason"].as<const char*>() : "";
+    log("stream.error " + std::to_string(sid) + " " + why);
+    if (voice_) voice_->onStreamError(sid, why);
+    return;
+  }
+  if (method == "asr.transcript" || method == "turn.reply") return;  // informational (display hooks are 待实机确认)
   log("ignored notification " + method);
 }
 
@@ -468,6 +499,16 @@ void DeviceClient::tickMotion() {
   }
 }
 
+void DeviceClient::updateTurnDisplay() {
+  std::string t = "idle";
+  if (state_ == SessionState::Ready && voice_) t = voice_->turnState();
+  if ((t.empty() || t == "idle") && player_.busy()) t = "speaking";
+  if (t.empty()) t = "idle";
+  if (t == turnShown_) return;
+  turnShown_ = t;
+  hal_.display.setTurnState(t);
+}
+
 void DeviceClient::tickTimers() {
   uint32_t t = now();
   if (textActive_ && textClearAt_ && (int32_t)(t - textClearAt_) >= 0) {
@@ -569,7 +610,7 @@ void DeviceClient::buildState(JsonObject o, bool full) {
   if (rssi != 0) o["wifi_rssi"] = rssi;
   JsonObject pv = o["privacy"].to<JsonObject>();
   pv["camera"] = false;
-  pv["mic"] = false;
+  pv["mic"] = voice_ && voice_->micActive();
 }
 
 void DeviceClient::sendStateUpdate() {
@@ -594,9 +635,15 @@ void DeviceClient::localEmergencyStop(const char* reason) {
   if (hal_.head.getPose(p)) cmdPose_ = p;
   cancelPendingMotion(kBusy, "local stop");
   player_.stopAll();
+  if (voice_) voice_->abort("local_stop");
   JsonDocument d;
   d["reason"] = reason;
   emitEvent("local_stop", ser(d));
+  markDirty();
+}
+
+void DeviceClient::onBargeIn() {
+  player_.stopAll();  // emits playback.state interrupted for the stopped streams; the bridge cuts its side on speech_start
   markDirty();
 }
 
@@ -874,6 +921,7 @@ DeviceClient::Rc DeviceClient::mEmergencyStop(const Req&, JsonObject out) {
   cancelPendingMotion(kBusy, "interrupted by emergency_stop");
   bool audio = player_.stopAll();
   hal_.audio.stop();
+  if (voice_) voice_->abort("emergency_stop");
   markDirty();
   out["motion_halted"] = true;
   out["audio_stopped"] = audio;

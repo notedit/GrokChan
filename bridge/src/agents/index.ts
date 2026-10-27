@@ -4,6 +4,7 @@ export type {
   AgentProviderId,
   ChatRole,
   ChatTurn,
+  DeviceContext,
   InboundChat,
   ReplyTarget,
 } from "./types";

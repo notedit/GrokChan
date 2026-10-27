@@ -102,7 +102,7 @@ Local: copy `.dev.vars.example` → `.dev.vars` (git-ignored).
 | Name | Kind | Purpose | Default |
 | --- | --- | --- | --- |
 | `STACKCHAN_ENABLED` | var | `"true"` enables `POST /mcp` and `GET /ws/device` (WebSocket). Otherwise both return 404. | off |
-| `TTS_PROVIDER` | var | `mock` (only provider in M1). Unset → `speak` fails with `tts_failed`. | unset |
+| `TTS_PROVIDER` | var | `mock`, `mock-stream` (tests) or `elevenlabs`. Unset → `speak` fails with `tts_failed`. | unset |
 | `DEVICE_CMD_TIMEOUT_MS` | var | Wait for a device response (speak: 5000) | `3000` |
 | `HELLO_TIMEOUT_MS` | var | Close sockets that skip `session.hello` | `10000` |
 | `DEVICE_RATE_LIMIT_PER_SEC` | var | Per-device command limit (`emergency_stop` exempt) | `20` |
@@ -113,6 +113,33 @@ Local: copy `.dev.vars.example` → `.dev.vars` (git-ignored).
 **There is no auth on `/mcp` and `/ws/device` yet** (see `TODO(auth)` in `src/index.ts`), so they are off by default. Only turn `STACKCHAN_ENABLED` on locally or behind your own access control. Design: [`../docs/audio-sdk-plan.md`](../docs/audio-sdk-plan.md) ([中文](../docs/audio-sdk-plan.zh-CN.md)); MCP tool list: [`../docs/mcp-plan.md`](../docs/mcp-plan.md).
 
 M1 tools: `list_devices`, `get_device_status`, `move_head`, `reset_pose`, `set_expression`, `show_text`, `set_led`, `speak`, `stop_audio`, `set_volume`, `emergency_stop`. MCP and the device socket share one Hub (`DeviceHub` / SessionHub): JSON-RPC 2.0 (`mediasession-rpc/1`) over `/ws/device?device_id=<id>`; S1 audio is PCM downlink (`audio.begin` / binary frames / `audio.end`; `stream.open` is S2). Tool ↔ method map: `DEVICE_METHODS` in `src/device/protocol.ts`.
+
+### Voice conversation (streaming uplink → ASR → Grok Bot → streaming TTS, with barge-in)
+
+Same gate as above (`STACKCHAN_ENABLED`, no auth yet). Voice is **off** unless `ASR_PROVIDER` is set; with `ASR_PROVIDER` unset `session.hello` carries no `voice` block and the device must not stream.
+
+Flow: device `event.speech_start` → `audio.begin {direction:"uplink", pcm_s16le, 16000, mono}` → `0x02` frames → `audio.end` → streaming ASR (`asr.transcript` partial/final) → the existing agent webhook with `device:{id,modality:"voice",turn_id,…}` (omitted for web chat) → reply posted to `reply.url` → streaming TTS (`stream-input`) → downlink `audio.begin` / frames (~1.2× pacing, `audio.credit`-aware) / `audio.end`. Turn state machine (`turn.state`): `idle → listening → transcribing → thinking → speaking → idle`. A new `speech_start`, `stop_audio`, `emergency_stop` or a reconnect interrupts: `audio.end reason=aborted`, upstream ASR/TTS sockets closed, a late agent reply is answered `200 {"ok":true,"dropped":"stale_turn"}`. Full protocol, diagrams and reason list: [`../docs/audio-sdk-plan.zh-CN.md`](../docs/audio-sdk-plan.zh-CN.md) §11.
+
+| Name | Kind | Purpose | Default |
+| --- | --- | --- | --- |
+| `ASR_PROVIDER` | var | `mock`, `workers-ai`, `elevenlabs`; unset = voice off | unset |
+| `TTS_PROVIDER` | var | `mock`, `mock-stream`, `elevenlabs`; unset = no TTS | unset |
+| `ELEVENLABS_API_KEY` | secret | ElevenLabs key (header only, never in a URL or log) | – |
+| `ELEVENLABS_VOICE_ID` `ELEVENLABS_TTS_MODEL` `ELEVENLABS_ASR_MODEL` `ELEVENLABS_HOST` | var | voice / models / API host | `JBFqnCBsd6RMkjVDRZzb` / `eleven_flash_v2_5` / `scribe_v2_realtime` / `api.elevenlabs.io` |
+| `UPLINK_MAX_MS` `UPLINK_GRACE_MS` `UPLINK_IDLE_TIMEOUT_MS` `UPLINK_BEGIN_TIMEOUT_MS` | var | utterance limit and uplink timeouts | `15000 2000 3000 3000` |
+| `ASR_TIMEOUT_MS` `AGENT_REPLY_TIMEOUT_MS` `VOICE_REPLY_MAX_CHARS` `VOICE_TURNS_PER_MIN` | var | turn timeouts / reply clip / rate limit | `10000 60000 1000 20` |
+| `PLAYBACK_SLACK_MS` | var | wait for `playback.state` after the last frame | `3000` |
+
+ElevenLabs setup (never put the key in a file you commit):
+
+```bash
+npx wrangler secret put ELEVENLABS_API_KEY      # deployed Worker
+# local dev: set ELEVENLABS_API_KEY= in .dev.vars (git-ignored); .dev.vars.example has an empty placeholder
+# then set TTS_PROVIDER=elevenlabs / ASR_PROVIDER=elevenlabs (vars)
+npm run smoke:elevenlabs                         # manual: reads ELEVENLABS_API_KEY from the environment, prints only ok/fail + first-packet / total timings
+```
+
+Automated tests use only mock providers (no network, no key). The ElevenLabs adapters use Worker outbound WebSockets (`fetch` + `Upgrade: websocket`); the smoke script exercises the same adapters from Node.
 
 ## Grok Bot routine tips
 
@@ -131,7 +158,7 @@ npm test             # mock webhook + mock Stack-chan device + real wrangler dev
 npm run typecheck
 ```
 
-Requires **Node ≥ 22** (wrangler 4). Tests: `test/e2e.test.ts` (chat), `test/mcp.unit.test.ts` (MCP layer against an in-memory gateway), `test/device.e2e.test.ts` (MCP ⇄ DeviceHub ⇄ `test/mock-device.ts` over real WebSockets; configurable delay / error / ignore / disconnect).
+Requires **Node ≥ 22** (wrangler 4). Tests: `test/e2e.test.ts` (chat), `test/mcp.unit.test.ts` (MCP layer against an in-memory gateway), `test/device.e2e.test.ts` (MCP ⇄ DeviceHub ⇄ `test/mock-device.ts` over real WebSockets; configurable delay / error / ignore / disconnect), `test/voice.e2e.test.ts` (mock device + mock ASR / grokbot / TTS: full voice turn, barge-in, stop, limits, stale replies, failures), `test/voice.unit.test.ts` and `test/elevenlabs.unit.test.ts` (uplink validation, pacer, sentence splitting, provider registry, ElevenLabs protocol against a fake WebSocket).
 
 Local `PUBLIC_ORIGIN` is localhost — a real Grok Bot cloud routine cannot reach it. Use a tunnel (`cloudflared`) for live routine debugging.
 
@@ -144,13 +171,18 @@ bridge/
     hub.ts            ChatHub Durable Object
     device/           DeviceHub (1 DO per device, JSON-RPC WS), DeviceRegistry, protocol, gateway
     mcp/              Streamable HTTP MCP server + the 11 tool definitions
-    tts/              TtsProvider interface + mock
+    tts/              TtsProvider interface (streaming input), mock, sentence splitter, ElevenLabs
+    asr/              AsrProvider interface (streaming), mock, workers-ai, ElevenLabs
+    voice/            VoiceEngine turn state machine, uplink validation, downlink pacer
+    net/              Workers outbound WebSocket helper, async queue
+    elevenlabs/       shared ElevenLabs config (env → host/voice/models)
     page.html         Passcode-gated chat UI
     agents/
       types.ts        Provider interface
       registry.ts     AGENT_PROVIDER switch
       grokbot.ts      Webhook + reply.url (production)
       muse.ts         Stub for later
+  scripts/            elevenlabs-smoke (manual, needs ELEVENLABS_API_KEY in env)
   test/               Vitest e2e
   wrangler.toml
 ```

@@ -52,6 +52,12 @@ export class ChatHub extends DurableObject<Record<string, unknown>> {
         count INTEGER NOT NULL
       );
     `);
+    // tokens.target: "device:<id>:<turn_id>" for voice turns, whose reply is routed to a DeviceHub (added after v1)
+    try {
+      this.sql.exec("ALTER TABLE tokens ADD COLUMN target TEXT");
+    } catch {
+      /* column already exists */
+    }
   }
 
   private prune(now: number, sessionId?: string): void {
@@ -95,7 +101,7 @@ export class ChatHub extends DurableObject<Record<string, unknown>> {
   }
 
   /** Store the user turn, mint a one-time reply token, return prior history. */
-  begin(sessionId: string, message: string, tokenTtlMs: number): BeginResult {
+  begin(sessionId: string, message: string, tokenTtlMs: number, target?: string): BeginResult {
     const now = Date.now();
     this.prune(now);
     const history = this.sql
@@ -115,7 +121,7 @@ export class ChatHub extends DurableObject<Record<string, unknown>> {
       )
       .one().id;
     const token = randomToken();
-    this.sql.exec("INSERT INTO tokens (token, session_id, expires_at) VALUES (?, ?, ?)", token, sessionId, now + tokenTtlMs);
+    this.sql.exec("INSERT INTO tokens (token, session_id, expires_at, target) VALUES (?, ?, ?, ?)", token, sessionId, now + tokenTtlMs, target ?? null);
     this.prune(now, sessionId);
     return { token, turnId, history };
   }
@@ -124,6 +130,19 @@ export class ChatHub extends DurableObject<Record<string, unknown>> {
   abort(token: string, turnId: number): void {
     this.sql.exec("DELETE FROM tokens WHERE token = ?", token);
     this.sql.exec("DELETE FROM turns WHERE id = ? AND role = 'user'", turnId);
+  }
+
+  /** Look at a reply token without consuming it (voice replies are routed to the device first). */
+  peek(token: string): { session_id: string; expires_at: number; target: string | null } | null {
+    const row = this.sql
+      .exec<{ session_id: string; expires_at: number; target: string | null }>("SELECT session_id, expires_at, target FROM tokens WHERE token = ?", token)
+      .toArray()[0];
+    return row ?? null;
+  }
+
+  /** Drop a token without storing a reply (stale voice turn: the user already interrupted). */
+  discard(token: string): void {
+    this.sql.exec("DELETE FROM tokens WHERE token = ?", token);
   }
 
   /** Validate + consume a reply token and store the assistant turn atomically. */

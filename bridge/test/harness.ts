@@ -68,6 +68,16 @@ export interface Worker {
 
 /** Start `wrangler dev` (real workerd + SQLite Durable Object) with fake secrets. */
 export async function startWorker(vars: Record<string, string>): Promise<Worker> {
+  // wrangler occasionally dies at startup when many instances boot in parallel: retry once
+  try {
+    return await startWorkerOnce(vars);
+  } catch (e) {
+    if (!String(e).includes("exited early")) throw e;
+    return await startWorkerOnce(vars);
+  }
+}
+
+async function startWorkerOnce(vars: Record<string, string>): Promise<Worker> {
   const port = await freePort();
   const inspector = await freePort();
   const persist = mkdtempSync(join(tmpdir(), "grokchan-bridge-"));

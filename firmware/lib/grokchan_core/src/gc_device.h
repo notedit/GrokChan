@@ -10,6 +10,7 @@
 #include "gc_dedup.h"
 #include "gc_hal.h"
 #include "gc_protocol.h"
+#include "gc_voice.h"
 
 namespace gc {
 
@@ -55,7 +56,7 @@ struct DeviceConfig {
 
 enum class SessionState { Idle, WaitRetry, Connecting, HelloSent, Ready };
 
-class DeviceClient : public ITransportListener, public IAudioEvents {
+class DeviceClient : public ITransportListener, public IAudioEvents, public IVoiceLink, public VoiceUplink::Listener {
  public:
   DeviceClient(const DeviceConfig& cfg, Hal hal, ITransport& transport, AudioPlayer& player);
 
@@ -66,6 +67,15 @@ class DeviceClient : public ITransportListener, public IAudioEvents {
 
   // Local trigger (touch / button): halt motion and stop audio, emit event.local_stop.
   void localEmergencyStop(const char* reason);
+  // Optional voice uplink (mic -> bridge ASR). Without it the device behaves exactly as in M1.
+  void setVoice(VoiceUplink* v) { voice_ = v; if (v) v->setListener(this); }
+  VoiceUplink* voice() const { return voice_; }
+  // IVoiceLink
+  bool linkReady() override { return ready(); }
+  bool linkSendText(const std::string& json) override { return transport_.sendText(json); }
+  bool linkSendBinary(const uint8_t* d, size_t n) override { return transport_.sendBinary(d, n); }
+  // VoiceUplink::Listener: the user talks over playback -> silence the speaker now.
+  void onBargeIn() override;
   // Send an `event.<name>` notification with a JSON object (or empty) as params.
   void emitEvent(const std::string& name, const std::string& paramsJson = "");
 
@@ -157,6 +167,7 @@ class DeviceClient : public ITransportListener, public IAudioEvents {
   void cancelPendingMotion(int code, const char* why);
   void tickMotion();
   void tickTimers();
+  void updateTurnDisplay();     // push the voice-turn state (local or bridge) to IDisplay::setTurnState on change
   void setExpressionInternal(const std::string& name);
   bool knownExpression(const std::string& n) const;
   void sendPlaybackState(uint16_t id, const char* state, const std::string& msg);
@@ -204,6 +215,9 @@ class DeviceClient : public ITransportListener, public IAudioEvents {
   uint16_t speakExprStream_ = 0;
   int preSpeakVolume_ = -1;
   PendingMotion motion_;
+  VoiceUplink* voice_ = nullptr;
+  std::string turnShown_;      // last state given to display.setTurnState ("" = never)
+  std::string thinkingFrom_;   // expression to restore when the bridge turn leaves "thinking"
   std::string scratchJson_;
 };
 

@@ -88,6 +88,64 @@ export const DEVICE_METHODS = {
 export type DeviceMethodTool = keyof typeof DEVICE_METHODS;
 
 
+/**
+ * Voice conversation (S1): uplink mic stream -> ASR -> agent -> streaming TTS -> playback.
+ * Wire surface only; the state machine lives in voice/engine.ts.
+ * Spec: docs/audio-sdk-plan.zh-CN.md "语音对话全链路".
+ */
+export const TURN_STATES = ["idle", "listening", "transcribing", "thinking", "speaking"] as const;
+export type TurnState = (typeof TURN_STATES)[number];
+
+export const VOICE_METHODS = {
+  /** device -> bridge notifications */
+  fromDevice: ["event.speech_start", "event.speech_end", "audio.begin", "audio.end", "audio.credit", "playback.state"],
+  /** bridge -> device notifications */
+  toDevice: ["turn.state", "asr.transcript", "turn.reply", "stream.error", "audio.begin", "audio.end"],
+} as const;
+
+/** Uplink (device mic) format fixed for S1. Opus is only a reserved type. */
+export const UPLINK = {
+  FORMAT: "pcm_s16le",
+  SAMPLE_RATE: 16000,
+  CHANNELS: 1,
+  DEFAULT_MAX_MS: 15_000,
+  /** hard ceiling regardless of config */
+  HARD_MAX_BYTES: 1_000_000,
+  MAX_FRAME_BYTES: 16_384,
+} as const;
+
+/** Why a turn / uplink stream ended or was refused (turn.state.reason, stream.error.reason). */
+export type VoiceReason =
+  | "done"
+  | "barge_in"
+  | "stop"
+  | "disconnect"
+  | "session_replaced"
+  | "no_audio"
+  | "empty_audio"
+  | "empty_transcript"
+  | "uplink_aborted"
+  | "too_large"
+  | "too_long"
+  | "timeout"
+  | "seq_gap"
+  | "bad_frame"
+  | "count_mismatch"
+  | "unsupported_format"
+  | "asr_unavailable"
+  | "asr_failed"
+  | "asr_timeout"
+  | "agent_not_configured"
+  | "agent_unavailable"
+  | "agent_timeout"
+  | "tts_unavailable"
+  | "tts_failed"
+  | "device_rejected"
+  | "device_error"
+  | "device_interrupted"
+  | "playback_timeout"
+  | "rate_limited";
+
 /** Device JSON-RPC error code -> MCP-side tool error code (doc 3.6). */
 export function mapDeviceError(code: number): string {
   switch (code) {

@@ -6,11 +6,13 @@
 
 #include "gc_audio.h"
 #include "gc_device.h"
+#include "gc_voice.h"
 #include "platform/pf_audio.h"
 #include "platform/pf_config.h"
 #include "platform/pf_display.h"
 #include "platform/pf_head.h"
 #include "platform/pf_led.h"
+#include "platform/pf_mic.h"
 #include "platform/pf_py32.h"
 #include "platform/pf_system.h"
 #include "platform/pf_transport.h"
@@ -26,6 +28,10 @@ pf::PyLed* g_led = nullptr;
 gc::PcmQueue* g_queue = nullptr;
 gc::AudioPlayer* g_player = nullptr;
 gc::DeviceClient* g_client = nullptr;
+#if GC_VOICE_ENABLED
+pf::M5Mic g_mic;
+gc::VoiceUplink* g_voice = nullptr;
+#endif
 
 uint32_t g_wifiSince = 0;
 bool g_wifiShown = false;
@@ -60,7 +66,7 @@ void wifiTick() {
 
 void setup() {
   auto cfg = M5.config();
-  cfg.internal_mic = false;  // mic and speaker share the I2S bus on CoreS3; M1 only plays
+  cfg.internal_mic = GC_VOICE_ENABLED;  // mic and speaker share the I2S bus on CoreS3 (待实机确认); off unless voice is enabled
   cfg.internal_spk = true;
   M5.begin(cfg);
   Serial.begin(GC_SERIAL_BAUD);
@@ -117,6 +123,19 @@ void setup() {
   gc::Hal hal{g_head, g_face, *g_led, g_sink, g_sys};
   g_client = new gc::DeviceClient(dc, hal, g_ws, *g_player);
 
+#if GC_VOICE_ENABLED
+  if (g_mic.begin()) {
+    gc::VoiceConfig vc;
+    vc.vad = GC_VOICE_VAD;
+    vc.bargeInByVad = GC_VOICE_BARGE_IN_BY_VAD;
+    vc.minRms = GC_VOICE_MIN_RMS;
+    g_voice = new gc::VoiceUplink(g_mic, *g_client, vc);
+    g_client->setVoice(g_voice);
+  } else {
+    g_sys.log("mic buffers: out of memory, voice disabled");
+  }
+#endif
+
   g_face.showText("连接 WiFi…", gc::TextPosition::Center, gc::TextSize::Medium);
   startWifi();
   g_client->begin();  // the transport waits for WiFi before opening the socket
@@ -127,6 +146,13 @@ void loop() {
   wifiTick();
   g_client->tick();  // transport loop, head/led/display/audio ticks, protocol timers
 
+#if GC_VOICE_ENABLED && !GC_TOUCH_EMERGENCY_STOP
+  // Push-to-talk on touch while the touch screen is not the emergency stop.
+  if (g_voice) {
+    if (M5.Touch.getCount() > 0 && M5.Touch.getDetail(0).wasPressed()) g_voice->pttDown(millis(), g_player->busy());
+    if (M5.Touch.getDetail(0).wasReleased()) g_voice->pttUp(millis());
+  }
+#endif
 #if GC_TOUCH_EMERGENCY_STOP
   if (M5.Touch.getCount() > 0 && M5.Touch.getDetail(0).wasPressed()) g_client->localEmergencyStop("touch");
 #endif

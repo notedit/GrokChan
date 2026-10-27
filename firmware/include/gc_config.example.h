@@ -80,6 +80,14 @@
 #define GC_AUDIO_PREBUFFER_MS 300     // 待实机确认 (WiFi jitter)
 #define GC_SPEAKER_CHANNEL 0          // M5.Speaker virtual channel used for TTS
 
+// Voice conversation (mic -> bridge ASR -> agent -> streaming TTS). OFF by default: the mic/speaker
+// I2S sharing on CoreS3 and the mic tuning are 待实机确认. Needs a bridge with ASR_PROVIDER set.
+#define GC_VOICE_ENABLED 0
+#define GC_MIC_GAIN 16                // M5.Mic magnification   待实机确认
+#define GC_VOICE_VAD 1                // 1 = energy VAD starts turns, 0 = touch push-to-talk only
+#define GC_VOICE_BARGE_IN_BY_VAD 0    // 0 = half duplex (VAD deaf while playing; no AEC), 1 = talk over playback
+#define GC_VOICE_MIN_RMS 500          // VAD absolute trigger floor (s16 rms)   待实机确认
+
 // Touching the screen = local emergency stop (halt head + stop audio + event.local_stop).
 #define GC_TOUCH_EMERGENCY_STOP 1     // 待实机确认 (accidental triggers)
 

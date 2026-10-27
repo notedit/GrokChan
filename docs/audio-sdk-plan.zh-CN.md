@@ -385,6 +385,103 @@ s.onAudioDown((stream) => { ... });
 6. **鉴权**：继续功能开关，还是 S1 加 MCP key / 设备 token？  
 7. **固件**：TS SDK 优先，C++ 头文件是否要在 S1 同步生成？
 
+## 11. 语音对话全链路（S1 增补，bridge 内实现）
+
+> 状态：bridge 与固件核心已实现并有测试；**固件麦克风平台层未在真机验证（待实机确认）**；鉴权仍未做（`STACKCHAN_ENABLED` + `TODO(auth)`）。协议名不变：`mediasession-rpc/1`。
+
+### 11.1 链路
+
+```text
+设备麦克风 ──pcm_s16le 16k──▶ [上行流] ──▶ ASR(流式) ──▶ agent webhook(grokbot) ──reply.url──▶ 回复文本
+                                                                                          │
+设备扬声器 ◀──pcm 下行帧◀── [流式 TTS，按句送入，边合成边发] ◀───────────────────────────────────┘
+```
+
+- **上行**：设备发 `event.speech_start` → `audio.begin {direction:"uplink", stream_id, format:"pcm_s16le", sample_rate:16000, channels:1, lang?}` → 二进制帧（type `0x02`，8 字节头不变，seq 从 0 连续）→ `audio.end {direction:"uplink", stream_id, total_chunks, total_bytes}` → `event.speech_end`。`reason:"aborted"` 表示设备放弃本句。Opus 仅保留类型位，S1 拒绝（`unsupported_format`）。
+- **单句限制**：默认 ≤15 s（`UPLINK_MAX_MS`）且 ≤ 对应字节数（上限 1 MB）。bridge 在 `session.hello` 的 result 里下发 `voice.uplink {format, sample_rate, channels, max_ms, max_bytes, idle_timeout_ms}`，设备应在限内截断并正常结束（固件核心已实现）。超限/超时/seq 断档/计数不符 ⇒ **丢弃该句**并发 `stream.error` + `turn.state idle reason=…`（不会拿半句去转录）。
+- **ASR**：适配器接口为流式（`start()` 得到会话，`push(frame)` 边收边送，`onPartial`，`finish()` 取最终文本，`abort()`）。`ASR_PROVIDER`：`mock`（测试）/ `workers-ai`（整句缓冲后转录，未实测）/ `elevenlabs`（Scribe realtime WebSocket，帧即到即转发，`commit_strategy=manual`，`speech_end` 时提交）。未设置 ⇒ 语音关闭，hello 里不带 `voice`。
+- **转发 grokbot**：最终文本走既有 agent webhook 链路（`agents/grokbot`，一次性 `reply.url`），`inbound.device = {id, modality:"voice", turn_id, hw?, fw?, caps?, lang?}`（网页聊天不带该字段，向后兼容）。回复由 `/api/reply/<token>` 回到 DeviceHub；token 带 `device:<id>:<turn_id>`，**过期回合的回复直接丢弃**（200 `{ok:true,dropped:"stale_turn"}`）。
+- **流式 TTS**：回复文本按句切分；`TtsProvider.openInputStream()`（ElevenLabs `stream-input` WebSocket，`pcm_16000`）按句送文本，音频一到就发 `audio.begin`（不带 `total_bytes`）→ 下行帧 → `audio.end {total_chunks,total_bytes,reason:"complete"}`。首句尽早开始；没有 `openInputStream` 的 provider 退化为逐句合成。下行帧不带 LAST 标志，`audio.end` 为终止符（seq 连续）。
+- **播放流控**：bridge 以约 1.2× 实时速率发送（`Pacer`，首 `burst` 一次性灌入后按速率），若设备发 `audio.credit {stream_id, buffer_ms}` 则按设备缓冲收紧；设备 `playback.state ended` 后才结束回合（`PLAYBACK_SLACK_MS` 兜底）。
+
+### 11.2 回合状态机（bridge，DeviceHub 内 `VoiceEngine`，每设备一个）
+
+```text
+              speech_start / uplink audio.begin
+   ┌──────┐ ───────────────────────────────▶ ┌───────────┐ speech_end / audio.end ┌──────────────┐
+   │ idle │                                   │ listening │ ─────────────────────▶ │ transcribing │
+   └──────┘ ◀──── reason(done/…) ──────────── └───────────┘                         └──────┬───────┘
+      ▲  ▲                                          │ 超限/超时/中止/断线                  │ 最终转录
+      │  │                                          ▼                                      ▼
+      │  └──────────── reason(…) ◀──────────── （任意状态）                          ┌──────────┐ 回复到达 ┌──────────┐
+      │                                                                              │ thinking │ ───────▶ │ speaking │
+      └────────────────────── 播放结束 playback.state=ended（reason=done）◀──────────────┴──────────┘          └──────────┘
+```
+
+打断边（任何非 idle 状态都适用）：
+
+| 触发 | 效果 |
+| --- | --- |
+| 新的 `event.speech_start` / 上行 `audio.begin`（barge-in） | 旧回合立即作废：`audio.end reason=aborted`（若正在 speaking）、取消 TTS/ASR/等待中的 agent 回复、清队列、迟到回复按 `stale_turn` 丢弃；随后进入新回合 `listening` |
+| MCP `stop_audio`（`device.stop_audio`） / `emergency_stop` | 同上，回到 `idle`（reason `stop`）；设备端 `emergency_stop` 还会终止本地上行（`audio.end aborted`） |
+| 断线 / 顶替连接 | 回合清空（`disconnect` / `session_replaced`），重连后从 `idle` 开始，旧回复丢弃 |
+| MCP `speak` 期间有语音回合 | MCP `speak` 返回 `busy`（`interrupt:true` 可打断） |
+
+### 11.3 事件 / 方法清单
+
+| 方向 | 方法 | 说明 |
+| --- | --- | --- |
+| 设备→bridge | `event.speech_start` `{lang?}` / `event.speech_end` | VAD 或按键 |
+| 设备→bridge | `audio.begin` / `audio.end`（`direction:"uplink"`） + 二进制 `0x02` 帧 | 上行 |
+| 设备→bridge | `audio.credit {stream_id, buffer_ms}`、`playback.state` | 下行流控 / 播放状态（固件当前未发 `audio.credit`，只靠 1.2× 节流） |
+| bridge→设备 | `turn.state {turn_id, state, prev, gen, reason?}` | 状态机变化，`state ∈ idle/listening/transcribing/thinking/speaking` |
+| bridge→设备 | `asr.transcript {turn_id, final, text, seq}` | 部分（`final:false`）/最终转录 |
+| bridge→设备 | `turn.reply {turn_id, text}` | agent 回复文本（用于显示） |
+| bridge→设备 | `stream.error {stream_id, direction, code:-32012, reason, message}` | 上行被拒/失败 |
+| bridge→设备 | `audio.begin` / 帧 / `audio.end`（下行，回复） | 流式 TTS |
+| `reason` 取值 | `done barge_in stop disconnect session_replaced no_audio empty_audio empty_transcript uplink_aborted too_large too_long timeout seq_gap bad_frame count_mismatch unsupported_format asr_unavailable asr_failed asr_timeout agent_not_configured agent_unavailable agent_timeout tts_unavailable tts_failed device_rejected device_error device_interrupted playback_timeout rate_limited` | 见 `bridge/src/device/protocol.ts` `VoiceReason` |
+
+`get_device_status` 的 result 在语音启用时带 `turn: {state, turn_id, gen}`。
+
+### 11.4 时序（一次完整对话）
+
+```text
+设备                       bridge(DeviceHub)                 ASR            grokbot(webhook)         TTS
+ │ event.speech_start ───▶  turn: listening
+ │ audio.begin(up) ──────▶  ASR.start ───────────────────▶ 连接
+ │ 0x02 帧 × N ──────────▶  asr.push ────────────────────▶ 流式
+ │ ◀── asr.transcript(partial)…
+ │ audio.end(up) ────────▶  turn: transcribing → ASR.finish ▶ 最终文本
+ │ ◀── asr.transcript(final)
+ │                         turn: thinking ── POST inbound(device:{…}) ───────▶ 处理
+ │                         ◀──────────────────────── POST /api/reply/<token> {text}
+ │ ◀── turn.reply          turn: speaking ── 文本按句 ───────────────────────────────▶ 合成
+ │ ◀── audio.begin(down)   ◀───────────────────────────────── 音频块（边合成边到） ───┘
+ │ ◀── 下行帧（≈1.2×）…
+ │ ◀── audio.end(complete)
+ │ playback.state=ended ─▶  turn: idle(reason=done)
+```
+
+### 11.5 配置
+
+| 名称 | 类型 | 说明 | 默认 |
+| --- | --- | --- | --- |
+| `ASR_PROVIDER` | var | `mock` / `workers-ai` / `elevenlabs`；未设 ⇒ 语音关闭 | 未设 |
+| `TTS_PROVIDER` | var | `mock`（整段）/ `mock-stream`（按文本流式）/ `elevenlabs`；未设 ⇒ `tts_unavailable` | 未设 |
+| `ELEVENLABS_API_KEY` | **secret** | 仅从 Worker env 读取，只放请求头，不进 URL/日志 | — |
+| `ELEVENLABS_VOICE_ID` / `_TTS_MODEL` / `_ASR_MODEL` / `_HOST` | var | 默认 `JBFqnCBsd6RMkjVDRZzb` / `eleven_flash_v2_5` / `scribe_v2_realtime` / `api.elevenlabs.io` | 见左 |
+| `UPLINK_MAX_MS` `UPLINK_GRACE_MS` `UPLINK_IDLE_TIMEOUT_MS` `UPLINK_BEGIN_TIMEOUT_MS` | var | 单句上限 / 截止宽限 / 帧间隔超时 / speech_start 后等 audio.begin | `15000 2000 3000 3000` |
+| `ASR_TIMEOUT_MS` `AGENT_REPLY_TIMEOUT_MS` `VOICE_REPLY_MAX_CHARS` `VOICE_TURNS_PER_MIN` | var | 转录超时 / agent 回复超时 / 回复截断 / 每设备每分钟回合数 | `10000 60000 1000 20` |
+| `AUDIO_CHUNK_DELAY_MS` `PLAYBACK_SLACK_MS` | var | 测试用额外帧间隔 / 等 `playback.state` 的兜底 | `0 3000` |
+
+设置密钥只用命令：`wrangler secret put ELEVENLABS_API_KEY`（本地开发写入 git 忽略的 `.dev.vars`；`.dev.vars.example` 里是空占位）。手动冒烟：`cd bridge && npm run smoke:elevenlabs`（读 `process.env.ELEVENLABS_API_KEY`，只输出成功/失败与首包/总耗时）。
+
+### 11.6 固件侧（核心已实现，平台层待实机确认）
+
+- `gc_voice.*`：`VoiceUplink` + `IMic`。能量 VAD（自适应噪声底、300 ms 预滚、连续 100 ms 才触发、700 ms 静音结束）或触摸 PTT；按 hello 下发的 `max_ms/max_bytes` 截断并正常 `audio.end`；`audio.end aborted`：急停/本地急停；收到 `turn.state` 离开 listening 或 `stream.error`：停止发送（不再宣告）；断线：清空、重连后重新 hello 才重新武装。
+- 半双工：默认 **播放期间 VAD 失聪**（无回声消除，避免自己打断自己）；PTT 仍可打断：本地先 `stopAll()`（`playback.state interrupted`）再发 `speech_start`，bridge 同时断开自己的流。`bargeInByVad=true` 可开启语音打断，需要真机评估回声。
+- `DeviceClient::setVoice()` 接入；`turn.state thinking` 时脸部表情切 `thinking`。`pf_mic.h`（M5.Mic）由 `GC_VOICE_ENABLED`（默认 0）开关：CoreS3 麦克风与扬声器共用 I2S，M5Unified 同时只允许其一，切换延迟/爆音待实机确认。
+
 ---
 
 已确认并开工 S0→S1（bridge 内收口）。未抽 `packages/`；`stream.open`→S2。

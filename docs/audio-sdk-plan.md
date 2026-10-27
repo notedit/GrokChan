@@ -32,3 +32,15 @@ Grok Bot  --MCP POST /mcp-->  Worker  --JSON-RPC+binary WS-->  Device / Client S
 ## Open decisions
 
 Confirmed: mediasession-rpc/1; stay in bridge (no packages yet); S1 = PCM + full M1 MCP + begin/end only (stream.open = S2); auth still off (STACKCHAN_ENABLED).
+
+
+## Voice conversation (S1 addendum; implemented in bridge + firmware core)
+
+Full chain: device mic → uplink stream → streaming ASR → existing agent webhook (`inbound.device = {id, modality:"voice", turn_id, …}`, reply via `reply.url`, stale turns dropped) → streaming TTS (`stream-input`, text fed by sentence) → paced downlink (~1.2× real time, `audio.credit` aware) → playback; with barge-in.
+
+```text
+idle ──speech_start / uplink audio.begin──▶ listening ──speech_end / audio.end──▶ transcribing ──final──▶ thinking ──reply──▶ speaking ──playback ended──▶ idle
+any state ──new speech_start | stop_audio | emergency_stop | disconnect──▶ (audio.end aborted, cancel ASR/agent/TTS, drop stale replies) ──▶ idle / listening
+```
+
+Uplink: `event.speech_start`, `audio.begin {direction:"uplink", pcm_s16le, 16000, mono}`, type `0x02` frames, `audio.end`, `event.speech_end`; ≤15 s per utterance (announced in `session.hello` result `voice.uplink`; over-limit/timeouts/gaps discard the utterance with `stream.error`). Bridge → device: `turn.state`, `asr.transcript`, `turn.reply`, `stream.error`. Providers: `ASR_PROVIDER` / `TTS_PROVIDER` = `mock` (default for tests), `elevenlabs` (Scribe realtime WS + TTS `stream-input` WS; key only via `wrangler secret put ELEVENLABS_API_KEY`). Details, sequence diagram, reasons and config table: [zh-CN §11](audio-sdk-plan.zh-CN.md). Firmware mic platform layer: unverified on hardware (待实机确认), off by default (`GC_VOICE_ENABLED 0`).

@@ -38,6 +38,7 @@ export function createGrokBotProvider(env: GrokBotEnv): AgentProvider {
         session_id: inbound.session_id,
         message: inbound.message,
         history: inbound.history,
+        ...(inbound.device ? { device: inbound.device } : {}),
         reply,
       };
       const body = JSON.stringify(payload);

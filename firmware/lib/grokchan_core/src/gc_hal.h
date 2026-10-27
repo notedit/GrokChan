@@ -40,6 +40,12 @@ class IDisplay {
   // Eyes look towards (pan,tilt) degrees; purely cosmetic (may be ignored).
   virtual void lookAt(int pan, int tilt) = 0;
   virtual void setSpeaking(bool speaking) = 0;
+  // Voice-turn state for the character: "idle" | "listening" | "transcribing" | "thinking" | "speaking"
+  // (the turn.state vocabulary; local PTT / VAD listening is reported too). Optional: the default
+  // ignores it, so displays without a character UI keep working. Called on changes only.
+  virtual void setTurnState(const std::string& /*state*/) {}
+  // Optional 0..1 audio level hint (rings / bars). Default ignores it.
+  virtual void setAudioLevel(float /*level01*/) {}
   // text is valid UTF-8, already truncated by the core.
   virtual void showText(const std::string& text, TextPosition pos, TextSize size) = 0;
   virtual void clearText() = 0;

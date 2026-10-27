@@ -184,7 +184,20 @@ async function handleApi(req: Request, env: Env, url: URL): Promise<Response> {
     const body = await readJson(req, 200_000);
     const text = typeof body?.text === "string" ? body.text.trim() : "";
     if (!text) return json({ error: "invalid_body", hint: 'expected JSON {"text":"..."}' }, 400);
-    const result = await hub.consume(replyMatch[1]!, text.length > MAX_REPLY ? text.slice(0, MAX_REPLY) + "…" : text);
+    const token = replyMatch[1]!;
+    const clipped = text.length > MAX_REPLY ? text.slice(0, MAX_REPLY) + "…" : text;
+    const peek = await hub.peek(token);
+    if (peek?.target && peek.expires_at >= Date.now()) {
+      // Voice turn: the device's turn state machine decides whether this reply is still wanted.
+      const m = /^device:([A-Za-z0-9_-]{1,64}):(t_[0-9a-f]{10})$/.exec(peek.target);
+      if (!m || !env.DEVICE) return json({ error: "unknown_or_used_token" }, 404);
+      const verdict = await env.DEVICE.getByName(m[1]!).agentReply(m[2]!, clipped);
+      if (verdict === "stale") {
+        await hub.discard(token);
+        return json({ ok: true, dropped: "stale_turn" }); // 200: the agent must not retry
+      }
+    }
+    const result = await hub.consume(token, clipped);
     if (result === "ok") return json({ ok: true });
     if (result === "expired") return json({ error: "token_expired" }, 410);
     return json({ error: "unknown_or_used_token" }, 404);

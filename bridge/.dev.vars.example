@@ -5,3 +5,8 @@ GROK_WEBHOOK_URL=https://example.invalid/webhook
 GROK_WEBHOOK_KEY=replace-me
 SITE_PASSCODE=replace-me
 PUBLIC_ORIGIN=http://localhost:8787
+# Voice (optional). Leave ELEVENLABS_API_KEY empty here; put the real value only in your local .dev.vars
+# or with `wrangler secret put ELEVENLABS_API_KEY`.
+# TTS_PROVIDER=elevenlabs
+# ASR_PROVIDER=elevenlabs
+ELEVENLABS_API_KEY=

@@ -16,7 +16,15 @@ GROK_WEBHOOK_SCHEME = "Bearer"
 # Stack-chan endpoints (/mcp, /ws/device) are OFF by default: M1 has no auth on
 # them yet. Set to "true" only for local dev / tests (wrangler dev --var).
 # STACKCHAN_ENABLED = "false"
-# TTS_PROVIDER = "mock"   # M1 ships only the mock provider; unset -> speak fails with tts_failed
+# Voice providers: unset -> that part is disabled (speak fails with tts_failed / no uplink in session.hello).
+# TTS_PROVIDER = "mock"        # mock | mock-stream | elevenlabs
+# ASR_PROVIDER = "mock"        # mock | workers-ai | elevenlabs
+# ElevenLabs (non-secret knobs; the key is a secret: `wrangler secret put ELEVENLABS_API_KEY`):
+# ELEVENLABS_VOICE_ID = "JBFqnCBsd6RMkjVDRZzb"
+# ELEVENLABS_TTS_MODEL = "eleven_flash_v2_5"
+# ELEVENLABS_ASR_MODEL = "scribe_v2_realtime"
+# Voice engine tuning (all optional): UPLINK_MAX_MS=15000, UPLINK_IDLE_TIMEOUT_MS=3000, ASR_TIMEOUT_MS=10000,
+# AGENT_REPLY_TIMEOUT_MS=60000, VOICE_REPLY_MAX_CHARS=1000, VOICE_TURNS_PER_MIN=20
 
 [[durable_objects.bindings]]
 name = "HUB"

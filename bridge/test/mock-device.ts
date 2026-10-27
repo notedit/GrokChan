@@ -1,4 +1,4 @@
-import { decodeFrame, PROTOCOL, type DecodedFrame } from "../src/device/protocol";
+import { decodeFrame, encodeFrame, FRAME_UPLINK_AUDIO, PROTOCOL, type DecodedFrame } from "../src/device/protocol";
 import { sleep, waitFor } from "./harness";
 
 export type LogEntry =
@@ -18,6 +18,8 @@ export interface MockOptions {
   results?: Record<string, (params: any) => unknown>;
   /** Send playback.state notifications for speak streams (default true). */
   playback?: boolean;
+  /** Delay between `audio.end complete` and `playback.state ended` (default 0). Use a big value to keep a turn in `speaking`. */
+  playbackEndDelayMs?: number;
   /** Extra session.hello params. */
   hello?: Record<string, unknown>;
   /** Cache by params._meta.idempotency_key like a real device (default true). */
@@ -113,6 +115,83 @@ export class MockDevice {
   trace(): string[] {
     return this.log.flatMap((e) => (e.kind === "request" ? [e.method] : e.kind === "notification" ? [e.method] : e.kind === "binary" ? [`bin:${e.frame.seq}`] : []));
   }
+  // ---- voice (uplink) helpers ----
+  private upStream = 100;
+  speechStart(params: Record<string, unknown> = {}): void {
+    this.notify("event.speech_start", params);
+  }
+  speechEnd(params: Record<string, unknown> = {}): void {
+    this.notify("event.speech_end", params);
+  }
+  /** audio.begin (uplink). Returns the stream id. */
+  uplinkBegin(extra: Record<string, unknown> = {}, streamId = ++this.upStream): number {
+    this.notify("audio.begin", { stream_id: streamId, direction: "uplink", format: "pcm_s16le", sample_rate: 16000, channels: 1, ...extra });
+    return streamId;
+  }
+  /** One 0x02 frame. The mock ASR reads the payload as UTF-8 text, so odd lengths are space-padded. */
+  uplinkFrame(streamId: number, seq: number, data: string | Uint8Array, last = false): void {
+    let bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
+    if (bytes.byteLength % 2) {
+      const p = new Uint8Array(bytes.byteLength + 1);
+      p.set(bytes);
+      p[bytes.byteLength] = 0x20;
+      bytes = p;
+    }
+    this.ws.send(encodeFrame(FRAME_UPLINK_AUDIO, streamId, seq, bytes, last));
+  }
+  uplinkEnd(streamId: number, extra: Record<string, unknown> = {}): void {
+    this.notify("audio.end", { stream_id: streamId, reason: "complete", ...extra });
+  }
+  /** Whole utterance: speech_start, begin, frames (the text is split in `chunks` parts), audio.end, speech_end. */
+  async say(text: string, o: { chunks?: number; chunkDelayMs?: number; speech?: boolean; end?: boolean; lang?: string } = {}): Promise<number> {
+    const parts = Math.max(1, o.chunks ?? 1);
+    const chars = [...text];
+    const per = Math.ceil(chars.length / parts);
+    if (o.speech !== false) this.speechStart();
+    const id = this.uplinkBegin(o.lang ? { lang: o.lang } : {});
+    for (let i = 0; i < parts; i++) {
+      this.uplinkFrame(id, i, chars.slice(i * per, (i + 1) * per).join("") || " ", false);
+      if (o.chunkDelayMs) await sleep(o.chunkDelayMs);
+    }
+    if (o.end !== false) {
+      this.uplinkEnd(id, { total_chunks: parts });
+      if (o.speech !== false) this.speechEnd();
+    }
+    return id;
+  }
+  /** turn.state notifications, in order (labels like "listening", "idle:barge_in"). */
+  turnStates(): string[] {
+    return this.notifications("turn.state").map((m) => m.params.state + (m.params.state === "idle" && m.params.reason ? ":" + m.params.reason : ""));
+  }
+  lastTurnId(): string | undefined {
+    return this.notifications("turn.state").filter((m) => m.params.turn_id).at(-1)?.params.turn_id;
+  }
+  transcripts(final?: boolean): any[] {
+    return this.notifications("asr.transcript").map((m) => m.params).filter((p) => final === undefined || p.final === final);
+  }
+  /** Downlink audio streams as the device saw them. */
+  audioStreams(): { id: number; begin: any; frames: DecodedFrame[]; end?: any; bytes: number }[] {
+    const out = new Map<number, { id: number; begin: any; frames: DecodedFrame[]; end?: any; bytes: number }>();
+    for (const e of this.log) {
+      if (e.kind === "notification" && e.method === "audio.begin") out.set(e.msg.params.stream_id, { id: e.msg.params.stream_id, begin: e.msg.params, frames: [], bytes: 0 });
+      else if (e.kind === "binary" && e.frame.type === 0x01) {
+        const st = out.get(e.frame.streamId);
+        if (st) {
+          st.frames.push(e.frame);
+          st.bytes += e.frame.payload.byteLength;
+        }
+      } else if (e.kind === "notification" && e.method === "audio.end") {
+        const st = out.get(e.msg.params.stream_id);
+        if (st) st.end = e.msg.params;
+      }
+    }
+    return [...out.values()];
+  }
+  async waitForState(state: string, ms = 5000): Promise<void> {
+    await waitFor(() => this.turnStates().at(-1)?.startsWith(state) || undefined, ms).catch(() => {
+      throw new Error(`turn never reached ${state}; saw ${JSON.stringify(this.turnStates())}`);
+    });
+  }
   async waitForRequest(method: string, ms = 5000): Promise<any> {
     return waitFor(() => this.requests(method)[0], ms);
   }
@@ -132,7 +211,13 @@ export class MockDevice {
       this.log.push({ kind: "notification", method: msg.method, msg });
       if (this.opts.playback && msg.method === "audio.begin") this.notify("playback.state", { stream_id: msg.params.stream_id, state: "started" });
       if (this.opts.playback && msg.method === "audio.end" && msg.params.reason === "complete") {
-        this.notify("playback.state", { stream_id: msg.params.stream_id, state: "ended" });
+        const sid = msg.params.stream_id;
+        const ms = this.opts.playbackEndDelayMs ?? 0;
+        if (ms > 0)
+          setTimeout(() => {
+            if (this.ws.readyState === WebSocket.OPEN) this.notify("playback.state", { stream_id: sid, state: "ended" });
+          }, ms);
+        else this.notify("playback.state", { stream_id: sid, state: "ended" });
       }
     } else {
       this.log.push({ kind: "response", msg });

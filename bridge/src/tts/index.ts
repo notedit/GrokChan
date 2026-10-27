@@ -1,11 +1,20 @@
 import { createMockTts } from "./mock";
+import { createElevenLabsTts } from "./elevenlabs";
 import type { TtsProvider } from "./types";
 
-export type { TtsProvider, TtsRequest, TtsResult } from "./types";
+export type { TtsProvider, TtsRequest, TtsResult, TtsStreamRequest, TtsStreamResult, TtsInputSession } from "./types";
+export { splitSentences } from "./sentences";
+export { openSpeechStream, type SpeechChunk, type SpeechStream } from "./stream";
 export { TtsError } from "./types";
 
+import type { ElevenLabsEnv } from "../elevenlabs/config";
+
 type Factory = (env: Record<string, unknown>) => TtsProvider;
-const registry = new Map<string, Factory>([["mock", () => createMockTts()]]);
+const registry = new Map<string, Factory>([
+  ["mock", () => createMockTts()],
+  ["mock-stream", () => createMockTts({ inputStream: true })],
+  ["elevenlabs", (env) => createElevenLabsTts(env as ElevenLabsEnv)],
+]);
 
 /** Register a provider factory (real providers go here; none ship in M1). */
 export function registerTtsProvider(id: string, factory: Factory): void {

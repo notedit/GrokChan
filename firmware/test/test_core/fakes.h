@@ -60,12 +60,15 @@ struct FakeHead : IHead {
 struct FakeDisplay : IDisplay {
   std::string expr = "neutral", text;
   bool speaking = false;
+  std::string turn;          // last setTurnState
+  int turnCalls = 0;
   int clears = 0, lookPan = 0, lookTilt = 0;
   TextPosition pos = TextPosition::Bubble;
   TextSize size = TextSize::Medium;
   void setExpression(const std::string& n) override { expr = n; }
   void lookAt(int p, int t) override { lookPan = p; lookTilt = t; }
   void setSpeaking(bool s) override { speaking = s; }
+  void setTurnState(const std::string& s) override { turn = s; turnCalls++; }
   void showText(const std::string& t, TextPosition p, TextSize s) override { text = t; pos = p; size = s; }
   void clearText() override { text.clear(); clears++; }
   void tick(uint32_t) override {}
@@ -110,6 +113,7 @@ struct FakeSink : IPcmSink {
 struct FakeTransport : ITransport {
   ITransportListener* l = nullptr;
   bool connected = false;
+  bool failBinary = false;  // sendBinary returns false (socket backed up / gone)
   int connectCalls = 0, disconnectCalls = 0;
   std::vector<std::string> texts;
   std::vector<std::vector<uint8_t>> bins;
@@ -118,7 +122,7 @@ struct FakeTransport : ITransport {
   void disconnect() override { disconnectCalls++; connected = false; }
   bool isConnected() override { return connected; }
   bool sendText(const std::string& s) override { texts.push_back(s); return true; }
-  bool sendBinary(const uint8_t* d, size_t n) override { bins.emplace_back(d, d + n); return true; }
+  bool sendBinary(const uint8_t* d, size_t n) override { if (failBinary) return false; bins.emplace_back(d, d + n); return true; }
   void loop() override {}
   // test helpers
   void open() { connected = true; l->onTransportConnected(); }
