@@ -41,15 +41,55 @@ export function parseBearer(req: Request): string | null {
 }
 
 /**
+ * Browser device clients cannot set `Authorization` on a WebSocket, so they carry the device token in
+ * `Sec-WebSocket-Protocol` (never in the URL, which lands in logs/history):
+ *   new WebSocket(url, ["mediasession-rpc.v1", "gc-auth.<device token>"])
+ * The server verifies the token exactly like a Bearer token, and echoes ONLY the non-secret
+ * `mediasession-rpc.v1` entry (browsers require the server to pick one offered protocol); the
+ * secret entry is never echoed, logged, or forwarded to the Durable Object.
+ * `Authorization: Bearer` keeps working unchanged and takes precedence when present.
+ */
+export const WS_SUBPROTOCOL = "mediasession-rpc.v1";
+export const WS_AUTH_PREFIX = "gc-auth.";
+const TOKEN_RE = /^[A-Za-z0-9_-]{16,128}$/;
+
+export interface WsAuthOffer {
+  /** Bearer header token, else the token from a `gc-auth.` subprotocol (null when neither / malformed). */
+  token: string | null;
+  /** Non-secret subprotocol to echo in the 101 response (null when the client did not offer it). */
+  echo: string | null;
+}
+
+export function parseWsAuth(req: Request): WsAuthOffer {
+  const offered = (req.headers.get("sec-websocket-protocol") ?? "")
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
+  const echo = offered.includes(WS_SUBPROTOCOL) ? WS_SUBPROTOCOL : null;
+  const bearer = parseBearer(req);
+  if (bearer !== null) return { token: bearer, echo };
+  const entry = offered.find((x) => x.startsWith(WS_AUTH_PREFIX));
+  const candidate = entry ? entry.slice(WS_AUTH_PREFIX.length) : "";
+  return { token: TOKEN_RE.test(candidate) ? candidate : null, echo };
+}
+
+/** Request headers for the Durable Object: the secret subprotocol is dropped, only the echo remains. */
+export function scrubWsAuthHeaders(headers: Headers, echo: string | null): void {
+  if (echo) headers.set("sec-websocket-protocol", echo);
+  else headers.delete("sec-websocket-protocol");
+}
+
+/**
  * Reject a WebSocket upgrade by accepting a pair and immediately closing with a protocol code
  * (e.g. WS_CLOSE.AUTH_FAILED = 4003). Prefer this over a plain HTTP 401 so clients see the
- * mediasession-rpc close code.
+ * mediasession-rpc close code. `echo` must be passed for browser clients: a browser that offered
+ * subprotocols fails the handshake (close 1006, code lost) unless the response selects one.
  */
-export function rejectWebSocket(code: number, reason: string): Response {
+export function rejectWebSocket(code: number, reason: string, echo: string | null = null): Response {
   const pair = new WebSocketPair();
   pair[1].accept();
   try {
     pair[1].close(code, reason.slice(0, 123));
   } catch {}
-  return new Response(null, { status: 101, webSocket: pair[0] });
+  return new Response(null, { status: 101, webSocket: pair[0], ...(echo ? { headers: { "sec-websocket-protocol": echo } } : {}) });
 }

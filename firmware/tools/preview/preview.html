@@ -28,62 +28,12 @@
 </head>
 <body>
 <script src="dist/preview_data.js"></script>
+<script src="face_draw.js"></script>
 <script>
 const Q = new URLSearchParams(location.search);
 const VIEW = Q.get('view') || 'live';
 
-function hex(c) { return '#' + (c >>> 0).toString(16).padStart(6, '0'); }
-
-// --- rasteriser: mirrors M5Face::draw() in pf_display.h -------------------------------------
-function drawFrame(ctx, f, s) {
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.fillStyle = hex(f.bg);
-  ctx.fillRect(0, 0, 320 * s, 240 * s);
-  ctx.lineJoin = 'round';
-  for (const p of f.p) {
-    const [type, color, x, y, rx, ry, thick, pts] = p;
-    const col = hex(color);
-    if (type === 0) {               // Poly: triangle fan from the centroid
-      const n = pts.length / 2;
-      if (n < 3) continue;
-      let cx = 0, cy = 0;
-      for (let k = 0; k < n; k++) { cx += pts[2 * k]; cy += pts[2 * k + 1]; }
-      cx = cx / n * s; cy = cy / n * s;
-      ctx.fillStyle = col;
-      ctx.beginPath();                // whole fan in one path: no anti-aliasing seams between triangles
-      for (let k = 0; k < n; k++) {
-        const a = k, b = (k + 1) % n;
-        ctx.moveTo(cx, cy);
-        ctx.lineTo(pts[2 * a] * s, pts[2 * a + 1] * s);
-        ctx.lineTo(pts[2 * b] * s, pts[2 * b + 1] * s);
-        ctx.closePath();
-      }
-      ctx.fill();
-    } else if (type === 1) {        // Ellipse
-      ctx.fillStyle = col;
-      ctx.beginPath(); ctx.ellipse(x * s, y * s, Math.max(rx * s, 0.01), Math.max(ry * s, 0.01), 0, 0, Math.PI * 2); ctx.fill();
-    } else {                        // Ring: concentric 1px outlines, drawn inwards
-      ctx.strokeStyle = col; ctx.lineWidth = 1;
-      const th = Math.max(1, Math.round(thick * s));
-      for (let k = 0; k < th; k++) {
-        const a = rx * s - k, b = ry * s - k;
-        if (a <= 0 || b <= 0) break;
-        ctx.beginPath(); ctx.ellipse(x * s, y * s, a, b, 0, 0, Math.PI * 2); ctx.stroke();
-      }
-    }
-  }
-}
-
-function drawBox(ctx, L, s) {     // subtitle box like drawText(): round rect 0x2104 with grey border
-  const [bx, by, bw, bh] = L.box;
-  ctx.fillStyle = '#212421'; ctx.strokeStyle = '#7b7d7b'; ctx.lineWidth = 1;
-  const r = 8 * s, x = bx * s, y = by * s, w = bw * s, h = bh * s;
-  ctx.beginPath();
-  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); ctx.fill(); ctx.stroke();
-  ctx.fillStyle = '#fff'; ctx.font = (16 * s) + 'px "Noto Sans CJK SC", "Microsoft YaHei", sans-serif'; ctx.textBaseline = 'top';
-  L.text.forEach((t, i) => ctx.fillText(t, 8 * s, (by + 6 + i * 18) * s));
-}
+const { hex, drawFrame, drawBox } = GCFaceDraw;   // shared with tools/webdevice (face_draw.js)
 
 function cell(parent, w, h, caption, s) {
   const d = document.createElement('div'); d.className = 'cell';

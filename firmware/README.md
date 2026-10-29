@@ -24,6 +24,9 @@ curl -s -X POST -H "X-Passcode: $SITE_PASSCODE" \
 
 待实机确认」的都只来自官方 StackChan 固件源码（MIT）或保守猜测，不是在你的机器上验证过的事实。
 
+> 真机端到端测试请按 [`docs/e2e-hardware-checklist.zh-CN.md`](../docs/e2e-hardware-checklist.zh-CN.md)（可勾选 checklist：部署、烧录、分阶段测试、延迟表、问题模板）。
+> 不想反复烧录？先用浏览器里的 Web 虚拟设备（同一份固件核心编译成 wasm）预演：[`docs/webdevice.zh-CN.md`](../docs/webdevice.zh-CN.md)
+
 ## 目录结构
 
 ```text

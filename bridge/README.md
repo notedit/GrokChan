@@ -153,6 +153,8 @@ npm run smoke:elevenlabs:worker                  # workerd path: wrangler dev + 
 
 Automated tests use only mock providers (no network, no key). The ElevenLabs adapters use Worker outbound WebSockets (`fetch` + `Upgrade: websocket`). Prefer the worker smoke to validate workerd; the Node smoke is the fallback if Upgrade outbound is blocked.
 
+Real-hardware end-to-end test checklist (Chinese, checkable): [`../docs/e2e-hardware-checklist.zh-CN.md`](../docs/e2e-hardware-checklist.zh-CN.md).
+
 ## Grok Bot routine tips
 
 1. Trigger type: **Webhook**.

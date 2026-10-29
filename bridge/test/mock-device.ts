@@ -26,6 +26,8 @@ export interface MockOptions {
   dedup?: boolean;
   /** Device Bearer token for /ws/device (required when STACKCHAN auth is on). */
   token?: string;
+  /** Browser-style auth: token in Sec-WebSocket-Protocol ("mediasession-rpc.v1", "gc-auth.<token>") instead of Authorization. */
+  viaSubprotocol?: boolean;
 }
 
 /** A fake Stack-chan: speaks mediasession-rpc/1 over a real WebSocket to `wrangler dev`. */
@@ -49,12 +51,15 @@ export class MockDevice {
   /** Open the socket (no hello yet). Sends Authorization + Device-Id when a token is configured. */
   async connect(query = `device_id=${this.deviceId}`): Promise<void> {
     const headers: Record<string, string> = { "Device-Id": this.deviceId };
-    if (this.opts.token) headers["Authorization"] = `Bearer ${this.opts.token}`;
-    // Node 22+ undici WebSocket accepts { headers }; browsers cannot set Authorization on WS.
-    this.ws = new (WebSocket as unknown as new (u: string, o?: { headers?: Record<string, string> }) => WebSocket)(
-      `${this.base.replace("http", "ws")}/ws/device?${query}`,
-      { headers },
-    );
+    const url = `${this.base.replace("http", "ws")}/ws/device?${query}`;
+    if (this.opts.viaSubprotocol) {
+      // exactly what a browser does: no custom headers, token in the subprotocol list
+      this.ws = new WebSocket(url, ["mediasession-rpc.v1", ...(this.opts.token ? [`gc-auth.${this.opts.token}`] : [])]);
+    } else {
+      if (this.opts.token) headers["Authorization"] = `Bearer ${this.opts.token}`;
+      // Node 22+ undici WebSocket accepts { headers }; browsers cannot set Authorization on WS.
+      this.ws = new (WebSocket as unknown as new (u: string, o?: { headers?: Record<string, string> }) => WebSocket)(url, { headers });
+    }
     this.ws.binaryType = "arraybuffer";
     this.ws.addEventListener("message", (ev) => this.onMessage(ev.data as string | ArrayBuffer));
     this.ws.addEventListener("close", (ev) => (this.closed = { code: ev.code, reason: ev.reason }));

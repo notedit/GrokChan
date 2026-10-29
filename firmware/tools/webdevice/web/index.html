@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>GrokChan · Web 虚拟设备</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>GrokChan · Web 虚拟 StackChan</h1>
+  <span id="badge-ws" class="chip" title="WebSocket / 会话状态">未上电</span>
+  <span id="badge-turn" class="chip turn-idle" title="turn.state">idle</span>
+  <span class="hint">固件核心(wasm)与真机同源 · 设备 ID 默认 stackchan-web,不会顶掉真机</span>
+</header>
+
+<main>
+  <section class="col col-device">
+    <div class="stage">
+      <canvas id="face" width="640" height="480" aria-label="StackChan 屏幕 320x240"></canvas>
+      <div id="touch-hint">点击屏幕 = 触摸(默认急停)</div>
+    </div>
+
+    <div class="row status">
+      <div><b>会话</b> <span id="st-session">-</span></div>
+      <div><b>表情</b> <span id="st-expr">-</span></div>
+      <div><b>上行</b> <span id="st-uplink">-</span></div>
+      <div><b>播放</b> <span id="st-player">-</span></div>
+      <div><b>重连</b> <span id="st-reconn">0</span></div>
+      <div><b>噪声底</b> <span id="st-noise">-</span></div>
+    </div>
+
+    <div class="row gauges">
+      <div class="panbox">
+        <canvas id="pose" width="260" height="150" aria-label="pan/tilt"></canvas>
+        <div id="pose-text" class="mono">pan 0° tilt 0°</div>
+        <div id="pose-msg" class="mono warn"></div>
+      </div>
+      <div class="side">
+        <div class="mono">LED</div>
+        <div class="leds"><span id="led0" class="led"></span><span id="led1" class="led"></span><span id="led-mode" class="mono">-</span></div>
+        <div class="mono">音量 <span id="vol-text">40</span>%<span id="mute-text"></span></div>
+        <div class="bar"><i id="vol-bar"></i></div>
+        <div class="mono">输出电平</div>
+        <div class="bar"><i id="out-bar"></i></div>
+        <div class="mono">麦克风电平 <span id="mic-text"></span></div>
+        <div class="bar"><i id="mic-bar"></i></div>
+        <div class="mono">电池 <span id="bat-text">-</span></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>语音交互</h2>
+      <div class="row">
+        <button id="btn-ptt" title="按住说话(PTT);播放中按下 = 打断">按住说话 (PTT)</button>
+        <button id="btn-touch" title="触摸屏;默认急停,GC_TOUCH_EMERGENCY_STOP=0 时为 PTT">触摸(按住)</button>
+        <label><input type="checkbox" id="chk-mic"> 真实麦克风</label>
+        <label><input type="checkbox" id="chk-aec"> 回声消除(浏览器 AEC)</label>
+      </div>
+      <div class="row">
+        <input id="in-say" type="text" value="你好,今天天气怎么样" aria-label="虚拟麦克风文本">
+        <button id="btn-say" title="把文本的 UTF-8 字节当作 16k PCM 送入真实的 VoiceUplink(VAD)。仅 ASR_PROVIDER=mock 时,桥会把它当转写文本">虚拟麦克风说话</button>
+      </div>
+      <div class="hint">虚拟麦克风与 mock ASR 配套:PCM 载荷按 UTF-8 解码即“转写结果”。真 ASR 请用真实麦克风。</div>
+      <div id="transcript" class="mono box">转写 / 回复会显示在这里</div>
+    </div>
+  </section>
+
+  <section class="col col-ctl">
+    <div class="panel">
+      <h2>连接</h2>
+      <div class="grid2">
+        <label>桥地址 <input id="in-url" type="text" placeholder="ws://127.0.0.1:8787(留空 = 本页同源)" autocomplete="off"></label>
+        <label>Device-Id <input id="in-id" type="text" value="stackchan-web" autocomplete="off"></label>
+        <label class="wide">设备 token <input id="in-token" type="password" placeholder="POST /api/devices/&lt;id&gt;/token 签发" autocomplete="off"></label>
+      </div>
+      <div class="row">
+        <label><input type="checkbox" id="chk-remember"> 仅本标签页记住 token(sessionStorage)</label>
+      </div>
+      <div class="row">
+        <button id="btn-power" class="primary">上电 / 连接</button>
+        <button id="btn-off">断电</button>
+        <button id="btn-issue" title="同源时(/sim)用当前登录态签发 stackchan-web 的 token">签发 token</button>
+        <span id="conn-msg" class="mono warn"></span>
+      </div>
+      <details>
+        <summary>固件配置(上电时生效)</summary>
+        <div class="grid2">
+          <label><input type="checkbox" id="cfg-vad" checked> VAD(GC_VAD_ENABLED)</label>
+          <label><input type="checkbox" id="cfg-barge"> VAD 打断(GC_VOICE_BARGE_IN_BY_VAD)</label>
+          <label><input type="checkbox" id="cfg-touch" checked> 触摸 = 急停(GC_TOUCH_EMERGENCY_STOP)</label>
+          <label>VAD 最小 RMS <input id="cfg-rms" type="number" value="500" min="50" max="8000"></label>
+          <label><input type="checkbox" id="cfg-autooff" checked> 连续 3 次 4003 自动断电(防桥端限流)</label>
+        </div>
+      </details>
+    </div>
+
+    <div class="panel">
+      <h2>故障注入</h2>
+      <div class="row wrap">
+        <button data-fault="drop">断线(1006)</button>
+        <button data-fault="badtoken">错 token 重连</button>
+        <label><input type="checkbox" id="f-blackhole"> 黑洞(收发全丢)</label>
+        <label>丢下行音频包 <input id="f-droprate" type="number" value="0" min="0" max="100" class="num">%</label>
+        <label><input type="checkbox" id="f-micmute"> 麦克风静音</label>
+      </div>
+      <div class="row wrap">
+        <label>超长语音 <input id="f-oversize" type="number" value="20000" min="1000" max="120000" step="1000" class="num"> ms</label>
+        <button data-fault="oversize">注入</button>
+        <button data-fault="lowbat">低电量 5%</button>
+        <button data-fault="bat">电量 77%</button>
+        <button data-fault="stall">舵机堵转</button>
+        <button data-fault="overheat">过热</button>
+        <button data-fault="cool">清除过热</button>
+        <button data-fault="estop">触摸急停</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>阶段时延(浏览器内,含 WebAudio 排程)</h2>
+      <table id="lat">
+        <thead><tr><th>#</th><th>类型</th><th>speech_end→ASR final</th><th>→turn.reply</th><th>→首个下行帧</th><th>→首个可听</th><th>→播放结束</th><th>结果</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="row"><button id="btn-lat-copy">复制 Markdown 表格</button><button id="btn-lat-clear">清空</button></div>
+      <div class="hint">语音轮:自 event.speech_end 起算;MCP speak:自收到 device.speak 起算。真机时延需另测(见文档)。</div>
+    </div>
+
+    <div class="panel logpanel">
+      <h2>RPC 日志</h2>
+      <div class="row wrap">
+        <input id="log-filter" type="text" placeholder="过滤(方法名/内容)" aria-label="日志过滤">
+        <label><input type="checkbox" id="log-rx" checked> rx</label>
+        <label><input type="checkbox" id="log-tx" checked> tx</label>
+        <label><input type="checkbox" id="log-sys" checked> sys</label>
+        <label><input type="checkbox" id="log-bin" checked> 音频帧</label>
+        <label><input type="checkbox" id="log-hb"> ping/pong</label>
+        <button id="btn-log-copy">复制</button>
+        <button id="btn-log-clear">清空</button>
+        <button id="btn-log-export">导出会话日志(无 token)</button>
+      </div>
+      <div id="log" class="log mono" role="log"></div>
+      <div class="row">
+        <input id="in-raw" type="text" class="grow" placeholder='手动 RPC,如 {"jsonrpc":"2.0","id":99,"method":"device.get_status","params":{}}' aria-label="手动 RPC">
+        <button id="btn-raw-rx" title="当作桥发来的帧交给固件核心处理(不经网络)">注入为 rx</button>
+        <button id="btn-raw-tx" title="直接作为设备→桥帧发送">发送为 tx</button>
+      </div>
+    </div>
+  </section>
+</main>
+<script src="face_draw.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>

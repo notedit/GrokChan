@@ -17,6 +17,9 @@ GROK_WEBHOOK_SCHEME = "Bearer"
 # Production: STACKCHAN_ENABLED=true + secret MCP_API_KEY + per-device tokens (POST /api/devices/<id>/token).
 # Dev defaults: leave STACKCHAN unset/false; leave ASR/TTS unset (voice off). Do not silently enable in prod.
 # STACKCHAN_ENABLED = "false"
+# Web virtual device (/sim, behind SITE_PASSCODE): OFF by default; only meaningful with STACKCHAN_ENABLED=true.
+# Enable for bring-up only (docs/webdevice.zh-CN.md), then remove again. Local: put it in .dev.vars instead.
+# SIM_UI_ENABLED = "false"
 # MCP_API_KEY is a secret: `wrangler secret put MCP_API_KEY` (or set in .dev.vars for local).
 # Voice providers: unset -> that part is disabled (speak fails with tts_failed / no uplink in session.hello).
 # TTS_PROVIDER = "mock"        # mock | mock-stream | elevenlabs

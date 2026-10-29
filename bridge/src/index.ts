@@ -5,7 +5,8 @@ import { createDoGateway, type GatewayEnv } from "./device/do-gateway";
 import { DEVICE_ID_RE, WS_CLOSE } from "./device/protocol";
 import { handleMcp } from "./mcp/server";
 import { DEFAULT_LIMITS, type Limits } from "./mcp/tools";
-import { hmacHex, parseBearer, rejectWebSocket, safeEqual } from "./auth";
+import { serveSim, simLoginRequired } from "./sim";
+import { hmacHex, parseBearer, parseWsAuth, rejectWebSocket, safeEqual, scrubWsAuthHeaders } from "./auth";
 
 export { ChatHub } from "./hub";
 export { DeviceHub } from "./device/hub";
@@ -34,6 +35,11 @@ export interface Env extends Partial<GatewayEnv> {
    * Voice stays off until ASR_PROVIDER / TTS_PROVIDER are set; firmware GC_VOICE_ENABLED defaults to 0.
    */
   STACKCHAN_ENABLED?: string;
+  /**
+   * Serve the browser-based virtual device at /sim/ (SITE_PASSCODE cookie required). Off unless "true",
+   * and only meaningful together with STACKCHAN_ENABLED=true. Dev/test aid: keep it off in production.
+   */
+  SIM_UI_ENABLED?: string;
   /** Soft limits for the MCP tools (defaults: pan -90..90, tilt 0..60, volume cap 70). */
   PAN_MIN?: string;
   PAN_MAX?: string;
@@ -69,7 +75,8 @@ function gatewayEnv(env: Env): GatewayEnv | null {
 /**
  * Stack-chan endpoints. Auth is split-track (mcp-plan §1.6 / audio-sdk-plan):
  *   - POST /mcp: Authorization: Bearer <MCP_API_KEY>
- *   - GET  /ws/device: Authorization: Bearer <device_token> + Device-Id (query device_id also accepted)
+ *   - GET  /ws/device: Authorization: Bearer <device_token> + Device-Id (query device_id also accepted);
+ *     browsers (no custom WS headers): Sec-WebSocket-Protocol "mediasession-rpc.v1, gc-auth.<device_token>"
  * Failures: MCP → 401 + IP rate limit; device WS → close 4003 + IP rate limit.
  * Still gated by STACKCHAN_ENABLED=true.
  */
@@ -100,18 +107,23 @@ async function handleStackchan(req: Request, env: Env, url: URL): Promise<Respon
   if (req.headers.get("Upgrade")?.toLowerCase() !== "websocket") return new Response("Expected WebSocket", { status: 426 });
   const deviceId = (req.headers.get("Device-Id") ?? url.searchParams.get("device_id") ?? "").trim();
   if (!DEVICE_ID_RE.test(deviceId)) return json({ error: "bad_device_id" }, 400);
+  const { token, echo } = parseWsAuth(req);
   if (await hub.rateLimited("authfail:" + ip, AUTH_FAIL_LIMIT, 60_000)) {
-    return rejectWebSocket(WS_CLOSE.AUTH_FAILED, "rate limited");
+    return rejectWebSocket(WS_CLOSE.AUTH_FAILED, "rate limited", echo);
   }
-  const token = parseBearer(req);
   const ok = !!token && (await genv.REGISTRY.getByName("registry").verifyToken(deviceId, token));
   if (!ok) {
     await hub.rateLimit("authfail:" + ip, AUTH_FAIL_LIMIT, 60_000);
-    return rejectWebSocket(WS_CLOSE.AUTH_FAILED, "unauthorized");
+    return rejectWebSocket(WS_CLOSE.AUTH_FAILED, "unauthorized", echo);
   }
   const headers = new Headers(req.headers);
   headers.set("x-device-id", deviceId);
-  return genv.DEVICE.getByName(deviceId).fetch(new Request(req, { headers }));
+  scrubWsAuthHeaders(headers, echo); // the token never reaches the Durable Object via this header
+  const res = await genv.DEVICE.getByName(deviceId).fetch(new Request(req, { headers }));
+  if (echo && res.status === 101 && res.webSocket) {
+    return new Response(null, { status: 101, webSocket: res.webSocket, headers: { "sec-websocket-protocol": echo } });
+  }
+  return res;
 }
 
 const SESSION_RE = /^[A-Za-z0-9_-]{8,64}$/;
@@ -385,6 +397,25 @@ export default {
         return await handleStackchan(req, env, url);
       } catch (e) {
         console.log("unhandled stackchan error:", e instanceof Error ? e.message : String(e));
+        return json({ error: "internal_error" }, 500);
+      }
+    }
+    if (url.pathname === "/sim" || url.pathname.startsWith("/sim/")) {
+      if (env.SIM_UI_ENABLED !== "true" || env.STACKCHAN_ENABLED !== "true") return new Response("Not Found", { status: 404 });
+      try {
+        const auth = await checkAuth(req, env);
+        if (auth !== "ok") {
+          if (auth === "bad") {
+            const hub = env.HUB.getByName("main");
+            const ip = clientIp(req);
+            if (await hub.rateLimited("authfail:" + ip, AUTH_FAIL_LIMIT, 60_000)) return json({ error: "too_many_attempts" }, 429);
+            await hub.rateLimit("authfail:" + ip, AUTH_FAIL_LIMIT, 60_000);
+          }
+          return simLoginRequired(url);
+        }
+        return serveSim(req, url);
+      } catch (e) {
+        console.log("unhandled sim error:", e instanceof Error ? e.message : String(e));
         return json({ error: "internal_error" }, 500);
       }
     }

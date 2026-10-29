@@ -1,0 +1,57 @@
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #0b0d12; color: #d6d9e2; font: 13px/1.4 -apple-system, "Segoe UI", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; }
+header { display: flex; gap: 12px; align-items: center; padding: 10px 16px; border-bottom: 1px solid #222838; flex-wrap: wrap; }
+h1 { font-size: 16px; margin: 0; }
+h2 { font-size: 13px; margin: 0 0 8px; color: #9fb0d8; }
+main { display: flex; gap: 14px; padding: 14px; align-items: flex-start; flex-wrap: wrap; }
+.col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.col-device { width: 660px; max-width: 100%; }
+.col-ctl { flex: 1 1 520px; }
+.panel { background: #12151d; border: 1px solid #222838; border-radius: 8px; padding: 10px 12px; }
+.stage { position: relative; background: #000; border-radius: 10px; border: 2px solid #2a3145; width: 660px; max-width: 100%; }
+#face { display: block; width: 100%; height: auto; border-radius: 8px; cursor: pointer; image-rendering: auto; }
+#touch-hint { position: absolute; right: 8px; bottom: 6px; font-size: 11px; color: #667; pointer-events: none; }
+.row { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
+.row.wrap { flex-wrap: wrap; }
+.status { flex-wrap: wrap; gap: 14px; color: #aab; }
+.status b { color: #7e8bb0; font-weight: 600; margin-right: 4px; }
+.gauges { align-items: flex-start; gap: 16px; }
+.panbox { background: #12151d; border: 1px solid #222838; border-radius: 8px; padding: 8px; }
+#pose { display: block; background: #0d1018; border-radius: 4px; }
+.side { flex: 1; min-width: 180px; }
+.bar { height: 8px; background: #1b2030; border-radius: 4px; margin: 3px 0 8px; overflow: hidden; }
+.bar i { display: block; height: 8px; width: 0; background: #7aa2ff; }
+#out-bar { background: #6ee7a8; } #mic-bar { background: #ffb86b; }
+.leds { display: flex; gap: 8px; align-items: center; margin: 4px 0 8px; }
+.led { width: 22px; height: 22px; border-radius: 50%; background: #000; border: 1px solid #333; display: inline-block; }
+.mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; }
+.warn { color: #ff9b8a; }
+.hint { color: #6b7391; font-size: 12px; }
+.chip { padding: 2px 10px; border-radius: 12px; background: #1b2030; border: 1px solid #343b50; font-size: 12px; }
+.chip.ok { background: #14301f; border-color: #2a6a45; color: #8ff0b8; }
+.chip.bad { background: #3a1a1a; border-color: #7a3a3a; color: #ffb0a0; }
+.chip.turn-listening { background: #14284a; border-color: #335; color: #8fc0ff; }
+.chip.turn-thinking { background: #3a3214; color: #ffe08f; }
+.chip.turn-speaking { background: #14301f; color: #8ff0b8; }
+button { background: #1b2030; color: #dde; border: 1px solid #343b50; border-radius: 6px; padding: 5px 10px; cursor: pointer; font: inherit; }
+button:hover { background: #26304a; } button:active, button.held { background: #3a4a7a; }
+button.primary { background: #2a4aa0; border-color: #4a6ad0; }
+input[type=text], input[type=password], input[type=number] { background: #0d1018; color: #dde; border: 1px solid #343b50; border-radius: 6px; padding: 5px 8px; font: inherit; min-width: 0; }
+input.grow, #in-say { flex: 1; }
+input.num { width: 76px; }
+label { display: inline-flex; gap: 6px; align-items: center; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+.grid2 label { display: flex; flex-direction: column; align-items: stretch; gap: 3px; }
+.grid2 label input[type=checkbox] { align-self: flex-start; }
+.grid2 .wide { grid-column: 1 / -1; }
+details { margin-top: 8px; }
+.box { background: #0d1018; border: 1px solid #222838; border-radius: 6px; padding: 8px; min-height: 52px; white-space: pre-wrap; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+th, td { border-bottom: 1px solid #222838; padding: 3px 6px; text-align: right; }
+th:first-child, td:first-child, th:nth-child(2), td:nth-child(2), th:last-child, td:last-child { text-align: left; }
+th { color: #8a96b8; font-weight: 600; }
+.log { height: 340px; overflow: auto; background: #0a0c11; border: 1px solid #222838; border-radius: 6px; padding: 4px 6px; white-space: pre-wrap; word-break: break-all; }
+.log div { padding: 1px 0; border-bottom: 1px dotted #181c28; }
+.log .rx { color: #8fd0ff; } .log .tx { color: #ffd28f; } .log .sys { color: #9aa3bf; } .log .bin { color: #8fe0b0; } .log .err { color: #ff9b8a; }
+.log .t { color: #596; margin-right: 6px; }
