@@ -31,7 +31,7 @@ Grok Bot  --MCP POST /mcp-->  Worker  --JSON-RPC+binary WS-->  Device / Client S
 
 ## Open decisions
 
-Confirmed: mediasession-rpc/1; stay in bridge (no packages yet); S1 = PCM + full M1 MCP + begin/end only (stream.open = S2); auth still off (STACKCHAN_ENABLED).
+Status v0.4 (2026-10-28): mediasession-rpc/1; stay in bridge; S1 = PCM + full M1 MCP + begin/end (stream.open = S2). Auth landed (device Bearer token + MCP_API_KEY). Echo = half-duplex + touch/PTT. Truncate-at-limit accepted. TTS mid-fail aborts. Voice providers unset by default; production checklist in bridge README.
 
 
 ## Voice conversation (S1 addendum; implemented in bridge + firmware core)

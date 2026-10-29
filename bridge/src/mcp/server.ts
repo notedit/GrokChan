@@ -6,7 +6,7 @@ import type { DeviceGateway } from "../device/gateway";
  * Hand-written on purpose: the bridge has zero runtime dependencies. It can be
  * swapped for `createMcpHandler` later without touching tools.ts.
  *
- * TODO(auth): require `Authorization: Bearer <MCP_API_KEY>` (scopes read/control)
+ * Auth is enforced at the Worker edge (index.ts): Authorization: Bearer <MCP_API_KEY>.
  * before handling anything; M1 intentionally ships without it.
  */
 

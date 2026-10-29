@@ -9,7 +9,7 @@ import { TtsError, type TtsInputSession, type TtsProvider, type TtsRequest, type
  * v-1-text-to-speech-voice-id-stream-input).
  *
  *  - auth: `xi-api-key` header on the upgrade request (never in the URL / logs)
- *  - output_format=pcm_16000 (or another PCM rate the device accepts), auto_mode=true so a sentence
+ *  - output_format=pcm_16000 (or another PCM rate the device accepts), auto_mode=true (stable default: flush each sentence without waiting for more text; pairs with stream.ts sentence push) so a sentence
  *    is synthesized as soon as it arrives instead of waiting for the chunk_length_schedule buffer
  *  - openInputStream(): text is pushed with sendText(), audio comes out of `chunks` as base64 JSON
  *    messages arrive; end() sends the empty-string close message (flushes the buffer)

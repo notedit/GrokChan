@@ -2,9 +2,10 @@ import pageHtml from "./page.html";
 import type { ChatHub } from "./hub";
 import { getAgentProvider } from "./agents";
 import { createDoGateway, type GatewayEnv } from "./device/do-gateway";
-import { DEVICE_ID_RE } from "./device/protocol";
+import { DEVICE_ID_RE, WS_CLOSE } from "./device/protocol";
 import { handleMcp } from "./mcp/server";
 import { DEFAULT_LIMITS, type Limits } from "./mcp/tools";
+import { hmacHex, parseBearer, rejectWebSocket, safeEqual } from "./auth";
 
 export { ChatHub } from "./hub";
 export { DeviceHub } from "./device/hub";
@@ -20,12 +21,18 @@ export interface Env extends Partial<GatewayEnv> {
   GROK_WEBHOOK_HEADER?: string;
   GROK_WEBHOOK_SCHEME?: string;
   SITE_PASSCODE: string;
+  /** Bearer key required on POST /mcp when STACKCHAN_ENABLED=true. Fail-closed if unset. */
+  MCP_API_KEY?: string;
   // Optional tuning knobs (strings, as wrangler vars). Defaults in parentheses.
   RATE_LIMIT_PER_MIN?: string; // (20)
   TOKEN_TTL_SECONDS?: string; // (600)
   WEBHOOK_MAX_ATTEMPTS?: string; // (4)
   RETRY_BASE_MS?: string; // (500)
-  /** Stack-chan device endpoints (/mcp, /ws/device). Off unless "true": M1 has NO auth on them yet. */
+  /**
+   * Stack-chan endpoints (/mcp, /ws/device). Off unless "true".
+   * Production checklist: STACKCHAN_ENABLED=true + MCP_API_KEY + registered device tokens.
+   * Voice stays off until ASR_PROVIDER / TTS_PROVIDER are set; firmware GC_VOICE_ENABLED defaults to 0.
+   */
   STACKCHAN_ENABLED?: string;
   /** Soft limits for the MCP tools (defaults: pan -90..90, tilt 0..60, volume cap 70). */
   PAN_MIN?: string;
@@ -33,6 +40,14 @@ export interface Env extends Partial<GatewayEnv> {
   TILT_MIN?: string;
   TILT_MAX?: string;
   VOLUME_CAP?: string;
+  /** ElevenLabs (optional). Key is a secret; never log it. */
+  ELEVENLABS_API_KEY?: string;
+  ELEVENLABS_VOICE_ID?: string;
+  ELEVENLABS_TTS_MODEL?: string;
+  ELEVENLABS_ASR_MODEL?: string;
+  ELEVENLABS_HOST?: string;
+  ASR_PROVIDER?: string;
+  TTS_PROVIDER?: string;
 }
 
 function limitsFromEnv(env: Env): Limits {
@@ -52,20 +67,48 @@ function gatewayEnv(env: Env): GatewayEnv | null {
 }
 
 /**
- * Stack-chan endpoints. TODO(auth): /mcp needs a bearer key (MCP_API_KEY) and
- * /ws/device a per-device token before this is exposed; until then both are
- * disabled unless STACKCHAN_ENABLED=true.
+ * Stack-chan endpoints. Auth is split-track (mcp-plan §1.6 / audio-sdk-plan):
+ *   - POST /mcp: Authorization: Bearer <MCP_API_KEY>
+ *   - GET  /ws/device: Authorization: Bearer <device_token> + Device-Id (query device_id also accepted)
+ * Failures: MCP → 401 + IP rate limit; device WS → close 4003 + IP rate limit.
+ * Still gated by STACKCHAN_ENABLED=true.
  */
 async function handleStackchan(req: Request, env: Env, url: URL): Promise<Response> {
   const genv = gatewayEnv(env);
   if (env.STACKCHAN_ENABLED !== "true" || !genv) return new Response("Not Found", { status: 404 });
+  const hub = env.HUB.getByName("main");
+  const ip = clientIp(req);
+
   if (url.pathname === "/mcp") {
+    // Method probe before auth so clients discover POST-only without a key.
+    if (req.method !== "POST") {
+      return new Response(JSON.stringify({ error: "method_not_allowed" }), {
+        status: 405,
+        headers: { "content-type": "application/json", allow: "POST" },
+      });
+    }
+    if (await hub.rateLimited("authfail:" + ip, AUTH_FAIL_LIMIT, 60_000)) return json({ error: "too_many_attempts" }, 429);
+    const key = parseBearer(req);
+    if (!env.MCP_API_KEY || !key || !(await safeEqual(key, env.MCP_API_KEY))) {
+      await hub.rateLimit("authfail:" + ip, AUTH_FAIL_LIMIT, 60_000);
+      return json({ error: "unauthorized" }, 401, { "www-authenticate": 'Bearer realm="mcp"' });
+    }
     return handleMcp(req, { gateway: createDoGateway(genv), limits: limitsFromEnv(env) }, env.PUBLIC_ORIGIN?.replace(/\/+$/, ""));
   }
+
   // /ws/device
   if (req.headers.get("Upgrade")?.toLowerCase() !== "websocket") return new Response("Expected WebSocket", { status: 426 });
-  const deviceId = req.headers.get("Device-Id") ?? url.searchParams.get("device_id") ?? "";
+  const deviceId = (req.headers.get("Device-Id") ?? url.searchParams.get("device_id") ?? "").trim();
   if (!DEVICE_ID_RE.test(deviceId)) return json({ error: "bad_device_id" }, 400);
+  if (await hub.rateLimited("authfail:" + ip, AUTH_FAIL_LIMIT, 60_000)) {
+    return rejectWebSocket(WS_CLOSE.AUTH_FAILED, "rate limited");
+  }
+  const token = parseBearer(req);
+  const ok = !!token && (await genv.REGISTRY.getByName("registry").verifyToken(deviceId, token));
+  if (!ok) {
+    await hub.rateLimit("authfail:" + ip, AUTH_FAIL_LIMIT, 60_000);
+    return rejectWebSocket(WS_CLOSE.AUTH_FAILED, "unauthorized");
+  }
   const headers = new Headers(req.headers);
   headers.set("x-device-id", deviceId);
   return genv.DEVICE.getByName(deviceId).fetch(new Request(req, { headers }));
@@ -75,9 +118,7 @@ const SESSION_RE = /^[A-Za-z0-9_-]{8,64}$/;
 const MAX_MESSAGE = 4000;
 const MAX_REPLY = 20000;
 const COOKIE = "gc_auth";
-const AUTH_FAIL_LIMIT = 10; // wrong passcodes per minute
-
-const enc = new TextEncoder();
+const AUTH_FAIL_LIMIT = 10; // wrong passcodes / bearer keys per minute per IP
 
 function json(data: unknown, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(data), {
@@ -89,20 +130,6 @@ function json(data: unknown, status = 200, headers: Record<string, string> = {})
 function intVar(v: string | undefined, def: number): number {
   const n = Number.parseInt(v ?? "", 10);
   return Number.isFinite(n) && n > 0 ? n : def;
-}
-
-async function hmacHex(key: string, data: string): Promise<string> {
-  const k = await crypto.subtle.importKey("raw", enc.encode(key), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const sig = new Uint8Array(await crypto.subtle.sign("HMAC", k, enc.encode(data)));
-  return [...sig].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-/** Constant-time comparison of two strings via equal-length HMAC digests. */
-async function safeEqual(a: string, b: string): Promise<boolean> {
-  const [x, y] = await Promise.all([hmacHex("cmp", a), hmacHex("cmp", b)]);
-  let diff = 0;
-  for (let i = 0; i < x.length; i++) diff |= x.charCodeAt(i) ^ y.charCodeAt(i);
-  return diff === 0;
 }
 
 function authCookieValue(env: Env): Promise<string> {
@@ -174,7 +201,12 @@ async function handleApi(req: Request, env: Env, url: URL): Promise<Response> {
   const hub = env.HUB.getByName("main");
 
   if (path === "/api/health" && method === "GET") {
-    return json({ ok: true, configured: !!(env.GROK_WEBHOOK_URL && env.GROK_WEBHOOK_KEY && env.SITE_PASSCODE && env.PUBLIC_ORIGIN) });
+    return json({
+      ok: true,
+      configured: !!(env.GROK_WEBHOOK_URL && env.GROK_WEBHOOK_KEY && env.SITE_PASSCODE && env.PUBLIC_ORIGIN),
+      stackchan: env.STACKCHAN_ENABLED === "true",
+      mcp_auth: !!env.MCP_API_KEY,
+    });
   }
 
   // The reply endpoint is authenticated only by the one-time token in the URL.
@@ -206,7 +238,8 @@ async function handleApi(req: Request, env: Env, url: URL): Promise<Response> {
   if (!path.startsWith("/api/")) return json({ error: "not_found" }, 404);
 
   // Everything below requires the shared passcode.
-  if (method === "POST" && !sameOrigin(req, url)) return json({ error: "bad_origin" }, 403);
+  if ((method === "POST" || method === "DELETE") && !sameOrigin(req, url)) return json({ error: "bad_origin" }, 403);
+  // DELETE/POST for device tokens also need same-origin when browser-initiated; scripts use X-Passcode (no Origin).
 
   if (path === "/api/login" && method === "POST") {
     const ip = clientIp(req);
@@ -285,6 +318,56 @@ async function handleApi(req: Request, env: Env, url: URL): Promise<Response> {
     if (!SESSION_RE.test(sessionId)) return json({ error: "invalid_session_id" }, 400);
     await hub.reset(sessionId);
     return json({ ok: true });
+  }
+
+  // ---- device token admin (SITE_PASSCODE). Token plaintext is returned once and never stored.
+  const genv = gatewayEnv(env);
+  if (path === "/api/devices" && method === "GET") {
+    if (!genv) return json({ error: "stackchan_not_configured" }, 503);
+    const list = await genv.REGISTRY.getByName("registry").list();
+    return json({
+      devices: list.map((d) => ({
+        device_id: d.device_id,
+        first_seen: d.first_seen,
+        last_seen: d.last_seen,
+        fw_version: d.fw_version,
+        hw: d.hw,
+        caps: d.caps,
+        has_token: !!d.has_token,
+      })),
+    });
+  }
+
+  const tokenMatch = /^\/api\/devices\/([A-Za-z0-9_-]{1,64})\/token$/.exec(path);
+  if (tokenMatch) {
+    if (!genv) return json({ error: "stackchan_not_configured" }, 503);
+    const deviceId = tokenMatch[1]!;
+    if (!DEVICE_ID_RE.test(deviceId)) return json({ error: "bad_device_id" }, 400);
+    if (method === "POST") {
+      // same-origin already checked for POST above when Origin is set
+      const issued = await genv.REGISTRY.getByName("registry").issueToken(deviceId);
+      // Plaintext token only in this response body. Operator must copy into firmware gc_config.h.
+      return json({ ok: true, device_id: issued.device_id, token: issued.token, note: "copy the token now; it is not stored in plaintext and will not be shown again" });
+    }
+    if (method === "DELETE") {
+      const had = await genv.REGISTRY.getByName("registry").revokeToken(deviceId);
+      return json({ ok: true, revoked: had });
+    }
+    return json({ error: "method_not_allowed" }, 405);
+  }
+
+  // Dev-only: exercise Workers outbound fetch+Upgrade to ElevenLabs from workerd.
+  // Protected by SITE_PASSCODE. Never logs the key. Not part of npm test.
+  if (path === "/api/dev/elevenlabs-smoke" && method === "POST") {
+    if (!env.ELEVENLABS_API_KEY) return json({ error: "elevenlabs_not_configured" }, 503);
+    try {
+      const { runElevenLabsWorkerSmoke } = await import("./dev/elevenlabs-worker-smoke");
+      const result = await runElevenLabsWorkerSmoke(env);
+      return json(result, result.ok ? 200 : 502);
+    } catch (e) {
+      console.log("elevenlabs worker smoke error:", e instanceof Error ? e.message : String(e));
+      return json({ ok: false, error: e instanceof Error ? e.message : "smoke_failed" }, 502);
+    }
   }
 
   return json({ error: "not_found" }, 404);

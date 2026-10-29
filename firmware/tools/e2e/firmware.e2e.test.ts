@@ -4,11 +4,11 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { sleep, startWorker, waitFor, type Worker } from "../../../bridge/test/harness";
+import { sleep, startWorker, waitFor, issueDeviceToken, PASSCODE, MCP_API_KEY, type Worker } from "../../../bridge/test/harness";
 import { mcpClient } from "../../../bridge/test/mcp-client";
 
 const SIM = resolve(__dirname, "../../.build/sim_stdio");
-const VARS = { STACKCHAN_ENABLED: "true", TTS_PROVIDER: "mock", DEVICE_CMD_TIMEOUT_MS: "3000", HELLO_TIMEOUT_MS: "5000", DEVICE_RATE_LIMIT_PER_SEC: "1000" };
+const VARS = { STACKCHAN_ENABLED: "true", TTS_PROVIDER: "mock", DEVICE_CMD_TIMEOUT_MS: "3000", HELLO_TIMEOUT_MS: "5000", DEVICE_RATE_LIMIT_PER_SEC: "1000", SITE_PASSCODE: PASSCODE, MCP_API_KEY };
 
 class SimDevice {
   child!: ChildProcessWithoutNullStreams;
@@ -16,6 +16,7 @@ class SimDevice {
   logs: string[] = [];
   closes: { code: number; reason: string }[] = [];
   connects = 0;
+  token = "";
   private buf = "";
   constructor(readonly base: string, readonly id: string) {}
   start() {
@@ -34,7 +35,10 @@ class SimDevice {
   private onLine(l: string) {
     if (l === "CONNECT") {
       this.connects++;
-      const ws = new WebSocket(`${this.base.replace("http", "ws")}/ws/device?device_id=${this.id}`);
+      const headers: Record<string, string> = { "Device-Id": this.id };
+      if (this.token) headers["Authorization"] = `Bearer ${this.token}`;
+      const WS = WebSocket as unknown as new (u: string, o?: { headers?: Record<string, string> }) => WebSocket;
+      const ws = new WS(`${this.base.replace("http", "ws")}/ws/device?device_id=${this.id}`, { headers });
       ws.binaryType = "arraybuffer";
       this.ws = ws;
       ws.addEventListener("open", () => this.w("O"));
@@ -60,8 +64,9 @@ let d: SimDevice;
 beforeAll(async () => {
   if (!existsSync(SIM)) throw new Error("build the simulator first: tools/run_e2e.sh");
   w = await startWorker(VARS);
-  mcp = mcpClient(w.base);
+  mcp = mcpClient(w.base, { authorization: `Bearer ${MCP_API_KEY}` });
   d = new SimDevice(w.base, "fwsim_1");
+  d.token = await issueDeviceToken(w.base, d.id);
   d.start();
   await waitFor(async () => false, 1).catch(() => {});
   for (let i = 0; i < 100; i++) {

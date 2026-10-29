@@ -1,12 +1,22 @@
 # Copy to .dev.vars for `npm run dev` (local only; .dev.vars is git-ignored).
-# These are placeholders, not real secrets.
+# These are placeholders, not real secrets. Never commit .dev.vars.
 AGENT_PROVIDER=grokbot
 GROK_WEBHOOK_URL=https://example.invalid/webhook
 GROK_WEBHOOK_KEY=replace-me
 SITE_PASSCODE=replace-me
 PUBLIC_ORIGIN=http://localhost:8787
-# Voice (optional). Leave ELEVENLABS_API_KEY empty here; put the real value only in your local .dev.vars
-# or with `wrangler secret put ELEVENLABS_API_KEY`.
+
+# Stack-chan (OFF by default). Production checklist:
+#   1) STACKCHAN_ENABLED=true
+#   2) MCP_API_KEY=<long random>   (wrangler secret put MCP_API_KEY when deploying)
+#   3) Register each device: POST /api/devices/<id>/token with X-Passcode / cookie; paste token into firmware gc_config.h
+#   4) Optionally enable voice: ASR_PROVIDER=elevenlabs TTS_PROVIDER=elevenlabs + ELEVENLABS_API_KEY
+# Firmware GC_VOICE_ENABLED stays 0 until real-hardware mic/speaker is verified.
+# STACKCHAN_ENABLED=true
+MCP_API_KEY=
+
+# Voice (optional). Leave providers unset in development. Put the real ElevenLabs key only in
+# local .dev.vars or `wrangler secret put ELEVENLABS_API_KEY` — never in git.
 # TTS_PROVIDER=elevenlabs
 # ASR_PROVIDER=elevenlabs
 ELEVENLABS_API_KEY=

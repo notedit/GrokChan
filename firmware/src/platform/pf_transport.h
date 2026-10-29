@@ -52,6 +52,10 @@ class WsTransport : public gc::ITransport {
   void maybeBegin() {
     if (!wantConnect_ || active_ || WiFi.status() != WL_CONNECTED) return;
     static const char* kPath = GC_WS_PATH "?device_id=" GC_DEVICE_ID;
+    // Auth headers (mediasession-rpc/1): Bearer device token + Device-Id. Token from gc_config.h.
+    // setAuthorization(plain) sends "Authorization: <value>"; setExtraHeaders appends raw lines.
+    ws_.setAuthorization("Bearer " GC_DEVICE_TOKEN);
+    ws_.setExtraHeaders("Device-Id: " GC_DEVICE_ID "\r\n");
 #if GC_SERVER_TLS
     ws_.beginSSL(GC_SERVER_HOST, GC_SERVER_PORT, kPath);  // no CA configured => library uses setInsecure()
 #else

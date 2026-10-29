@@ -24,6 +24,8 @@ export interface MockOptions {
   hello?: Record<string, unknown>;
   /** Cache by params._meta.idempotency_key like a real device (default true). */
   dedup?: boolean;
+  /** Device Bearer token for /ws/device (required when STACKCHAN auth is on). */
+  token?: string;
 }
 
 /** A fake Stack-chan: speaks mediasession-rpc/1 over a real WebSocket to `wrangler dev`. */
@@ -44,9 +46,15 @@ export class MockDevice {
     this.opts = { playback: true, dedup: true, ...opts };
   }
 
-  /** Open the socket (no hello yet). */
+  /** Open the socket (no hello yet). Sends Authorization + Device-Id when a token is configured. */
   async connect(query = `device_id=${this.deviceId}`): Promise<void> {
-    this.ws = new WebSocket(`${this.base.replace("http", "ws")}/ws/device?${query}`);
+    const headers: Record<string, string> = { "Device-Id": this.deviceId };
+    if (this.opts.token) headers["Authorization"] = `Bearer ${this.opts.token}`;
+    // Node 22+ undici WebSocket accepts { headers }; browsers cannot set Authorization on WS.
+    this.ws = new (WebSocket as unknown as new (u: string, o?: { headers?: Record<string, string> }) => WebSocket)(
+      `${this.base.replace("http", "ws")}/ws/device?${query}`,
+      { headers },
+    );
     this.ws.binaryType = "arraybuffer";
     this.ws.addEventListener("message", (ev) => this.onMessage(ev.data as string | ArrayBuffer));
     this.ws.addEventListener("close", (ev) => (this.closed = { code: ev.code, reason: ev.reason }));

@@ -65,7 +65,7 @@ export const WS_CLOSE = {
   REPLACED: 4000,
   HELLO_TIMEOUT: 4001,
   PROTOCOL_MISMATCH: 4002,
-  AUTH_FAILED: 4003, // reserved; auth not implemented yet
+  AUTH_FAILED: 4003, // device WS Bearer rejected
 } as const;
 
 /**

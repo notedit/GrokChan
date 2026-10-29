@@ -102,6 +102,7 @@ Local: copy `.dev.vars.example` → `.dev.vars` (git-ignored).
 | Name | Kind | Purpose | Default |
 | --- | --- | --- | --- |
 | `STACKCHAN_ENABLED` | var | `"true"` enables `POST /mcp` and `GET /ws/device` (WebSocket). Otherwise both return 404. | off |
+| `MCP_API_KEY` | secret | Bearer key required on `POST /mcp` when Stack-chan is on (fail-closed if unset) | – |
 | `TTS_PROVIDER` | var | `mock`, `mock-stream` (tests) or `elevenlabs`. Unset → `speak` fails with `tts_failed`. | unset |
 | `DEVICE_CMD_TIMEOUT_MS` | var | Wait for a device response (speak: 5000) | `3000` |
 | `HELLO_TIMEOUT_MS` | var | Close sockets that skip `session.hello` | `10000` |
@@ -110,13 +111,23 @@ Local: copy `.dev.vars.example` → `.dev.vars` (git-ignored).
 | `PAN_MIN` `PAN_MAX` `TILT_MIN` `TILT_MAX` | var | Soft limits for `move_head` | `-90 90 0 60` |
 | `VOLUME_CAP` | var | Max volume for `speak` / `set_volume` | `70` |
 
-**There is no auth on `/mcp` and `/ws/device` yet** (see `TODO(auth)` in `src/index.ts`), so they are off by default. Only turn `STACKCHAN_ENABLED` on locally or behind your own access control. Design: [`../docs/audio-sdk-plan.md`](../docs/audio-sdk-plan.md) ([中文](../docs/audio-sdk-plan.zh-CN.md)); MCP tool list: [`../docs/mcp-plan.md`](../docs/mcp-plan.md).
+**Auth is split-track** (mcp-plan §1.6): `POST /mcp` requires `Authorization: Bearer <MCP_API_KEY>`; device WS requires `Authorization: Bearer <device_token>` + `Device-Id` (query `device_id` also accepted). Failures: MCP → 401 + IP rate limit; device → WebSocket close `4003` + IP rate limit. Registry stores only the SHA-256 of each device token. Issue / revoke under `SITE_PASSCODE`:
 
-M1 tools: `list_devices`, `get_device_status`, `move_head`, `reset_pose`, `set_expression`, `show_text`, `set_led`, `speak`, `stop_audio`, `set_volume`, `emergency_stop`. MCP and the device socket share one Hub (`DeviceHub` / SessionHub): JSON-RPC 2.0 (`mediasession-rpc/1`) over `/ws/device?device_id=<id>`; S1 audio is PCM downlink (`audio.begin` / binary frames / `audio.end`; `stream.open` is S2). Tool ↔ method map: `DEVICE_METHODS` in `src/device/protocol.ts`.
+```bash
+# issue (token shown once — paste into firmware include/gc_config.h as GC_DEVICE_TOKEN)
+curl -s -X POST -H "X-Passcode: $SITE_PASSCODE" "$ORIGIN/api/devices/stackchan-01/token"
+# list / revoke
+curl -s -H "X-Passcode: $SITE_PASSCODE" "$ORIGIN/api/devices"
+curl -s -X DELETE -H "X-Passcode: $SITE_PASSCODE" "$ORIGIN/api/devices/stackchan-01/token"
+```
+
+**Production checklist:** `STACKCHAN_ENABLED=true` + `MCP_API_KEY` (secret) + register each device token. Keep `STACKCHAN` off in plain local clones until those are set. Design: [`../docs/audio-sdk-plan.md`](../docs/audio-sdk-plan.md) ([中文](../docs/audio-sdk-plan.zh-CN.md)); MCP tool list: [`../docs/mcp-plan.md`](../docs/mcp-plan.md).
+
+M1 tools: `list_devices`, `get_device_status`, `move_head`, `reset_pose`, `set_expression`, `show_text`, `set_led`, `speak`, `stop_audio`, `set_volume`, `emergency_stop`. MCP and the device socket share one Hub (`DeviceHub` / SessionHub): JSON-RPC 2.0 (`mediasession-rpc/1`) over `/ws/device`; S1 audio is PCM downlink (`audio.begin` / binary frames / `audio.end`; `stream.open` is S2). Tool ↔ method map: `DEVICE_METHODS` in `src/device/protocol.ts`.
 
 ### Voice conversation (streaming uplink → ASR → Grok Bot → streaming TTS, with barge-in)
 
-Same gate as above (`STACKCHAN_ENABLED`, no auth yet). Voice is **off** unless `ASR_PROVIDER` is set; with `ASR_PROVIDER` unset `session.hello` carries no `voice` block and the device must not stream.
+Same gate as above (`STACKCHAN_ENABLED` + auth). Voice is **off** unless `ASR_PROVIDER` is set; with `ASR_PROVIDER` unset `session.hello` carries no `voice` block and the device must not stream. **Echo policy (fixed):** half-duplex + touch/PTT interrupt only — firmware keeps `GC_VOICE_BARGE_IN_BY_VAD=0` so energy VAD is deaf while speaking; `stop_audio` / `emergency_stop` / touch still interrupt. Overlong utterances: firmware truncates at the limit and sends a normal `audio.end`; the bridge accepts an exact-at-limit stream and only emits `stream.error` for oversize / timeout / seq gaps / count mismatches. Mid-stream TTS failure aborts immediately (`audio.end aborted` + `idle:tts_failed`).
 
 Flow: device `event.speech_start` → `audio.begin {direction:"uplink", pcm_s16le, 16000, mono}` → `0x02` frames → `audio.end` → streaming ASR (`asr.transcript` partial/final) → the existing agent webhook with `device:{id,modality:"voice",turn_id,…}` (omitted for web chat) → reply posted to `reply.url` → streaming TTS (`stream-input`) → downlink `audio.begin` / frames (~1.2× pacing, `audio.credit`-aware) / `audio.end`. Turn state machine (`turn.state`): `idle → listening → transcribing → thinking → speaking → idle`. A new `speech_start`, `stop_audio`, `emergency_stop` or a reconnect interrupts: `audio.end reason=aborted`, upstream ASR/TTS sockets closed, a late agent reply is answered `200 {"ok":true,"dropped":"stale_turn"}`. Full protocol, diagrams and reason list: [`../docs/audio-sdk-plan.zh-CN.md`](../docs/audio-sdk-plan.zh-CN.md) §11.
 
@@ -136,10 +147,11 @@ ElevenLabs setup (never put the key in a file you commit):
 npx wrangler secret put ELEVENLABS_API_KEY      # deployed Worker
 # local dev: set ELEVENLABS_API_KEY= in .dev.vars (git-ignored); .dev.vars.example has an empty placeholder
 # then set TTS_PROVIDER=elevenlabs / ASR_PROVIDER=elevenlabs (vars)
-npm run smoke:elevenlabs                         # manual: reads ELEVENLABS_API_KEY from the environment, prints only ok/fail + first-packet / total timings
+npm run smoke:elevenlabs                         # Node path: reads ELEVENLABS_API_KEY from env, prints ok/fail + timings (never the key)
+npm run smoke:elevenlabs:worker                  # workerd path: wrangler dev + POST /api/dev/elevenlabs-smoke (SITE_PASSCODE)
 ```
 
-Automated tests use only mock providers (no network, no key). The ElevenLabs adapters use Worker outbound WebSockets (`fetch` + `Upgrade: websocket`); the smoke script exercises the same adapters from Node.
+Automated tests use only mock providers (no network, no key). The ElevenLabs adapters use Worker outbound WebSockets (`fetch` + `Upgrade: websocket`). Prefer the worker smoke to validate workerd; the Node smoke is the fallback if Upgrade outbound is blocked.
 
 ## Grok Bot routine tips
 
@@ -167,7 +179,8 @@ Local `PUBLIC_ORIGIN` is localhost — a real Grok Bot cloud routine cannot reac
 ```text
 bridge/
   src/
-    index.ts          HTTP Worker
+    index.ts          HTTP Worker (MCP + device WS auth, device token admin)
+    auth.ts           HMAC / SHA-256 / Bearer helpers, WS 4003 reject
     hub.ts            ChatHub Durable Object
     device/           DeviceHub (1 DO per device, JSON-RPC WS), DeviceRegistry, protocol, gateway
     mcp/              Streamable HTTP MCP server + the 11 tool definitions

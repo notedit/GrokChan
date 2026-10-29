@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { client, MockWebhook, sleep, startWorker, waitFor, WEBHOOK_KEY, type Worker } from "./harness";
+import { client, MockWebhook, sleep, startWorker, waitFor, WEBHOOK_KEY, PASSCODE, MCP_API_KEY, issueDeviceToken, type Worker } from "./harness";
 import { MockDevice, type MockOptions } from "./mock-device";
 import { mcpClient } from "./mcp-client";
 
@@ -18,6 +18,8 @@ const VARS = {
   AGENT_REPLY_TIMEOUT_MS: "1500",
   ASR_TIMEOUT_MS: "3000",
   RETRY_BASE_MS: "10",
+  SITE_PASSCODE: PASSCODE,
+  MCP_API_KEY,
 };
 
 let hook: MockWebhook;
@@ -30,7 +32,8 @@ let n = 0;
 const did = () => `voice_${++n}_${Math.random().toString(36).slice(2, 7)}`;
 
 async function dev(opts: MockOptions = {}, id = did(), base = w.base): Promise<MockDevice> {
-  const d = new MockDevice(base, id, opts);
+  const token = opts.token ?? (await issueDeviceToken(base, id));
+  const d = new MockDevice(base, id, { ...opts, token });
   devices.push(d);
   await d.start();
   return d;
@@ -44,7 +47,7 @@ beforeAll(async () => {
   await hook.start();
   const hv = { GROK_WEBHOOK_URL: hook.url, GROK_WEBHOOK_KEY: WEBHOOK_KEY };
   [w, strict] = await Promise.all([startWorker({ ...VARS, ...hv }), startWorker({ ...VARS, ...hv, VOICE_TURNS_PER_MIN: "2" })]);
-  mcp = mcpClient(w.base);
+  mcp = mcpClient(w.base, { authorization: `Bearer ${MCP_API_KEY}` });
   http = client(w.base);
 });
 afterAll(async () => {
@@ -226,6 +229,23 @@ describe("uplink limits and failures", () => {
     expect(hookFor(d)).toBeUndefined();
   });
 
+  it("utterance exactly at maxBytes is accepted, ends normally, and is transcribed", async () => {
+    const d = await dev();
+    d.speechStart();
+    const id = d.uplinkBegin();
+    // UPLINK_MAX_MS=1000 -> 32000 B. Send exactly 10 x 3200 B frames.
+    const chunk = new Uint8Array(3200);
+    chunk.set(new TextEncoder().encode("exact-limit-ok".padEnd(32, " ")));
+    for (let i = 0; i < 10; i++) d.uplinkFrame(id, i, chunk);
+    d.uplinkEnd(id, { total_chunks: 10, total_bytes: 32000 });
+    d.speechEnd();
+    await d.waitForState("thinking", 5000);
+    expect(d.notifications("stream.error")).toHaveLength(0);
+    const final = d.transcripts(true)[0];
+    expect(final).toBeTruthy();
+    expect(final.text.length).toBeGreaterThan(0);
+  });
+
   it("declared total_bytes over the limit fails at audio.begin; unsupported format and a seq gap are rejected", async () => {
     const d = await dev();
     d.speechStart();
@@ -293,15 +313,14 @@ describe("uplink limits and failures", () => {
     expect(c.audioStreams().every((s) => s.end?.reason !== "complete")).toBe(true);
   });
 
-  it("TTS failing mid-stream: what was synthesized is still played (audio.end complete), the turn is reported idle:tts_failed", async () => {
+  it("TTS failing mid-stream: abort immediately (audio.end aborted + idle:tts_failed)", async () => {
     const d = await dev();
     await d.say("中途失败");
     const req = await waitHook(d);
     await http.reply(req.body.reply.url, { text: "前面正常。[tts-midfail]这里坏掉了。" });
     await d.waitForState("idle");
     const s = d.audioStreams()[0];
-    expect(s?.end?.reason).toBe("complete");
-    expect(s.bytes).toBeGreaterThan(0);
+    expect(s?.end?.reason).toBe("aborted");
     expect(d.turnStates().at(-1)).toBe("idle:tts_failed");
   });
 

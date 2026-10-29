@@ -313,8 +313,8 @@ M5Stack 官方 StackChan 固件（ESP-IDF，MIT 头）已内置 xiaozhi 的 MCP 
 ### 3.2 连接与握手
 
 ```text
-GET wss://<PUBLIC_ORIGIN>/ws/device?device_id=sc-ab12cd      （M1 先不鉴权，见下）
-  # TODO(auth)：改为握手头 Authorization: Bearer <device token> + Device-Id；token 不进 URL
+GET wss://<PUBLIC_ORIGIN>/ws/device?device_id=sc-ab12cd
+  # Authorization: Bearer <device token> + Device-Id（token 不进 URL；Registry 只存 SHA-256）
   Upgrade: websocket
 ```
 
@@ -469,7 +469,7 @@ bridge → 设备  notification audio.end {stream_id:7, total_chunks:n, total_by
 | -32001 | `limit_exceeded` | 超出设备端硬限位/安全范围，已拒绝 | `rejected_limit` |
 | -32002 | `low_battery` | 电量过低，拒绝运动/大音量 | `low_battery` |
 | -32003 | `timeout` | 设备端执行超时 | `timeout` |
-| -32004 | `unauthorized` | 未授权（M1 暂未使用，鉴权上线后启用） | `unauthorized` |
+| -32004 | `unauthorized` | 未授权 | `unauthorized` |
 | -32005 | `privacy_blocked` | 隐私开关关闭 | `privacy_blocked` |
 | -32006 | `unsupported` | 固件不支持该方法/参数 | `unsupported` |
 | -32007 | `rate_limited` | 设备端限流 | `rate_limited` |

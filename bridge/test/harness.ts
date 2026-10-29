@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 
 export const PASSCODE = "test-passcode-123"; // fake, test only
 export const WEBHOOK_KEY = "test-webhook-key-FAKE"; // fake, test only
+export const MCP_API_KEY = "test-mcp-key-FAKE"; // fake, test only
 
 export function freePort(): Promise<number> {
   return new Promise((res, rej) => {
@@ -153,4 +154,23 @@ export function client(base: string) {
     reply: (url: string, body: unknown = {}) =>
       fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then(j),
   };
+}
+
+/** Issue a device token via the SITE_PASSCODE-protected admin API. Token is shown once. */
+export async function issueDeviceToken(base: string, deviceId: string, passcode = PASSCODE): Promise<string> {
+  const r = await fetch(`${base}/api/devices/${encodeURIComponent(deviceId)}/token`, {
+    method: "POST",
+    headers: { "x-passcode": passcode, "content-type": "application/json" },
+  });
+  const data = (await r.json().catch(() => ({}))) as { token?: string; error?: string };
+  if (!r.ok || !data.token) throw new Error(`issueDeviceToken failed: HTTP ${r.status} ${data.error ?? ""}`);
+  return data.token;
+}
+
+export async function revokeDeviceToken(base: string, deviceId: string, passcode = PASSCODE): Promise<void> {
+  const r = await fetch(`${base}/api/devices/${encodeURIComponent(deviceId)}/token`, {
+    method: "DELETE",
+    headers: { "x-passcode": passcode },
+  });
+  if (!r.ok) throw new Error(`revokeDeviceToken failed: HTTP ${r.status}`);
 }

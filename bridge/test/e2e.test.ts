@@ -42,7 +42,7 @@ describe("page + health", () => {
   it("health is public and does not leak config values", async () => {
     const r = await fetch(w.base + "/api/health");
     const text = await r.text();
-    expect(JSON.parse(text)).toEqual({ ok: true, configured: true });
+    expect(JSON.parse(text)).toEqual({ ok: true, configured: true, stackchan: false, mcp_auth: false });
     expect(text).not.toContain(WEBHOOK_KEY);
   });
 });

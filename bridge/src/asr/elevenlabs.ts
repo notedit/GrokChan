@@ -7,7 +7,7 @@ import { AsrError, type AsrProvider, type AsrResult, type AsrSession, type AsrSt
  * (wss://<host>/v1/speech-to-text/realtime, docs: api-reference/speech-to-text/v-1-speech-to-text-realtime).
  *
  *  - auth: `xi-api-key` header (never in the URL), via fetch() + Upgrade on Workers
- *  - audio_format=pcm_16000, commit_strategy=manual: the device decides when the utterance ends
+ *  - audio_format=pcm_16000, commit_strategy=manual (kept): device VAD / speech_end / audio.end triggers commit; do NOT switch to ElevenLabs built-in VAD
  *    (audio.end / speech_end), so finish() commits explicitly
  *  - every pushed uplink frame is forwarded immediately as a base64 `input_audio_chunk`
  *    (the newest frame is held back one step so finish() can send it with commit=true)

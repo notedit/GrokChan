@@ -1,6 +1,6 @@
 # 音频 / 信令 / MCP 一体化 SDK 设计（草案）
 
-> 状态：**v0.3 实现中（S0→S1，2026-10-27）**。用户已确认：同一 Worker/Hub、先在 bridge 内收口、协议名 `mediasession-rpc/1`、S1=PCM+全套 M1 MCP、鉴权仍关。`stream.open` **推迟到 S2**（S1 保持 `audio.begin`/`audio.end` + 二进制帧）。暂不抽 packages。  
+> 状态：**v0.4（真机前查缺补漏，2026-10-28）**。同一 Worker/Hub、`mediasession-rpc/1`、S1=PCM+全套 M1 MCP。**鉴权已落地**（设备 token + `MCP_API_KEY` 分轨）；语音默认关；回声策略定稿半双工+触摸打断；超长语句固件截断/bridge 接受恰好上限；TTS 中途失败立刻 abort。`stream.open` 仍为 S2。暂不抽 packages。  
 > 英文简版：[audio-sdk-plan.md](audio-sdk-plan.md)。  
 > 相关：原 MCP 规划 [mcp-plan.zh-CN.md](mcp-plan.zh-CN.md)（设备工具清单仍作参考）；现有实现 `bridge/src/{mcp,device,tts}/`。  
 > **本期目标**：一套部署在 Cloudflare Workers 上的一体化栈——**设备 WebSocket（JSON-RPC + 二进制音频）** 与 **Agent 侧 MCP（Streamable HTTP）** 共用同一会话 / 流 / 错误模型，而不是两套并行协议。
@@ -206,7 +206,7 @@ client → server  notif     stream.state  { stream_id, state:"started"|"ended"|
 | 4000 | replaced（同 session 被新连接顶替） |
 | 4001 | hello timeout |
 | 4002 | protocol mismatch |
-| 4003 | auth failed（预留） |
+| 4003 | auth failed（设备 Bearer 校验失败） |
 | 1006 | 异常断开（客户端库常见） |
 
 ## 4. 音频格式约定
@@ -312,7 +312,7 @@ DO 基类负责：握手、顶替连接、stream 表、credit 流控、限流、
 1. **一个工具 ↔ 一个设备 JSON-RPC method**（或一次明确的本地 `play()` 流水线）。禁止 MCP 与 WS 两套不同语义。  
 2. MCP 只做 **参数校验、设备寻址、等待策略、错误码映射**；真正副作用在 `SessionHub`。  
 3. `speak` = `tts.synthesize`（可注入） + `stream.open`/`audio.*` 下行；对 Agent 仍暴露为单一 tool `speak`。  
-4. 鉴权：设备 token 与 `MCP_API_KEY` 分轨（与 mcp-plan §1.6 一致）；确认前可继续用功能开关代替。
+4. 鉴权：**已实现**分轨（与 mcp-plan §1.6 一致）。`STACKCHAN_ENABLED` 仍为总开关；生产必须同时设 `MCP_API_KEY` 并注册设备 token。
 
 ### 7.2 M1 工具 ↔ 方法映射
 
@@ -373,7 +373,7 @@ s.onAudioDown((stream) => { ... });
 | **S0** | 协议名改 `mediasession-rpc/1`；帧编解码、错误码、`DEVICE_METHODS` 同源表（仍在 `bridge/src/device/`） | 帧互操作 + typecheck；固件 `kProtocol` 同步 |
 | **S1** | 在 bridge 内收口 SessionHub + `/mcp`；PCM `speak`/play；断线重连/顶替；**不开 `stream.open`（S2）** | `npm test`（含 device.e2e）；协议字符串 `mediasession-rpc/1`；固件 native 测通过 |
 | **S2** | Opus 双向 + credit；设备控制方法挂同一 Hub | 真机/模拟 Opus；`move_head` 等经 MCP 通路 |
-| **S3** | 鉴权、resume 持久化、bridge 切依赖、文档合并 | 可部署 demo；`mcp-plan` 标为已吸收 |
+| **S3** | resume 持久化、bridge 切依赖、文档合并（鉴权已在 S1 查缺补漏完成） | 可部署 demo；`mcp-plan` 标为已吸收 |
 
 ## 10. 请你确认的问题
 
@@ -382,12 +382,12 @@ s.onAudioDown((stream) => { ... });
 3. **协议名**：**已确认** `mediasession-rpc/1`。  
 4. **`stream.open` vs 仅 `audio.begin`**：双段，还是保持现状只 begin？  
 5. **S1 范围**：PCM only + 全套 M1 MCP 工具，是否够用？（Opus → S2）  
-6. **鉴权**：继续功能开关，还是 S1 加 MCP key / 设备 token？  
+6. **鉴权**：✅ 已选并实现 S1 加 MCP key / 设备 token（分轨）。  
 7. **固件**：TS SDK 优先，C++ 头文件是否要在 S1 同步生成？
 
 ## 11. 语音对话全链路（S1 增补，bridge 内实现）
 
-> 状态：bridge 与固件核心已实现并有测试；**固件麦克风平台层未在真机验证（待实机确认）**；鉴权仍未做（`STACKCHAN_ENABLED` + `TODO(auth)`）。协议名不变：`mediasession-rpc/1`。
+> 状态：bridge 与固件核心已实现并有测试；**固件麦克风平台层未在真机验证（待实机确认）**；鉴权已落地（`STACKCHAN_ENABLED` + `MCP_API_KEY` + 设备 token）。协议名不变：`mediasession-rpc/1`。
 
 ### 11.1 链路
 
@@ -479,9 +479,20 @@ s.onAudioDown((stream) => { ... });
 ### 11.6 固件侧（核心已实现，平台层待实机确认）
 
 - `gc_voice.*`：`VoiceUplink` + `IMic`。能量 VAD（自适应噪声底、300 ms 预滚、连续 100 ms 才触发、700 ms 静音结束）或触摸 PTT；按 hello 下发的 `max_ms/max_bytes` 截断并正常 `audio.end`；`audio.end aborted`：急停/本地急停；收到 `turn.state` 离开 listening 或 `stream.error`：停止发送（不再宣告）；断线：清空、重连后重新 hello 才重新武装。
-- 半双工：默认 **播放期间 VAD 失聪**（无回声消除，避免自己打断自己）；PTT 仍可打断：本地先 `stopAll()`（`playback.state interrupted`）再发 `speech_start`，bridge 同时断开自己的流。`bargeInByVad=true` 可开启语音打断，需要真机评估回声。
+- 半双工（**定稿**）：默认 **播放期间 VAD 失聪**（无 AEC，避免自己打断自己）；仅 PTT/触摸或 `stop_audio` / `emergency_stop` 可打断：本地先 `stopAll()`（`playback.state interrupted`）再发 `speech_start`，bridge 同时断开自己的流。`GC_VOICE_BARGE_IN_BY_VAD=1` 仅在有 AEC 后考虑开启。
 - `DeviceClient::setVoice()` 接入；`turn.state thinking` 时脸部表情切 `thinking`。`pf_mic.h`（M5.Mic）由 `GC_VOICE_ENABLED`（默认 0）开关：CoreS3 麦克风与扬声器共用 I2S，M5Unified 同时只允许其一，切换延迟/爆音待实机确认。
 
 ---
 
 已确认并开工 S0→S1（bridge 内收口）。未抽 `packages/`；`stream.open`→S2。
+
+### 11.7 语音策略定稿（真机前）
+
+| 项 | 定稿 |
+| --- | --- |
+| 回声 | 半双工 + 触摸/PTT 打断；播放中禁用能量 VAD 自动 barge-in |
+| 超长语句 | 固件截断并正常 `audio.end`；bridge 接受恰好上限的正常结束；仅超限/超时/seq 断档/计数不符 → `stream.error` |
+| TTS 中途失败 | 立刻 abort：`audio.end reason=aborted` + `turn.state idle reason=tts_failed` |
+| ElevenLabs ASR | `commit_strategy=manual`（设备 VAD / speech_end 触发） |
+| ElevenLabs TTS | 按句推送（`sentences.ts` + `auto_mode=true`） |
+| 生产默认 | 开发：ASR/TTS unset、STACKCHAN 关；生产 checklist：开 STACKCHAN、设 MCP_API_KEY、注册设备、ASR/TTS=elevenlabs；固件 `GC_VOICE_ENABLED` 仍默认 0 |

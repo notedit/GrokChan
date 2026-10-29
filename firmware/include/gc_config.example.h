@@ -26,6 +26,9 @@
 
 // Device id: [A-Za-z0-9_-]{1,64}; the bridge keys the Durable Object on it.
 #define GC_DEVICE_ID "stackchan-01"
+// Device Bearer token from POST /api/devices/<id>/token (SITE_PASSCODE). Shown once; paste here.
+// Empty = handshake will be rejected with close 4003. Never commit a real token.
+#define GC_DEVICE_TOKEN ""
 #define GC_FW_VERSION "0.1.0"
 #define GC_HW_NAME "m5stack-cores3"
 
@@ -85,7 +88,9 @@
 #define GC_VOICE_ENABLED 0
 #define GC_MIC_GAIN 16                // M5.Mic magnification   待实机确认
 #define GC_VOICE_VAD 1                // 1 = energy VAD starts turns, 0 = touch push-to-talk only
-#define GC_VOICE_BARGE_IN_BY_VAD 0    // 0 = half duplex (VAD deaf while playing; no AEC), 1 = talk over playback
+// Policy: half-duplex + touch/PTT interrupt only. While speaking/playing, energy VAD must NOT
+// auto barge-in (no AEC on CoreS3 yet). Interrupt via touch PTT, stop_audio, or emergency_stop.
+#define GC_VOICE_BARGE_IN_BY_VAD 0    // 0 = half duplex (VAD deaf while playing), 1 = talk-over (needs AEC)
 #define GC_VOICE_MIN_RMS 500          // VAD absolute trigger floor (s16 rms)   待实机确认
 
 // Touching the screen = local emergency stop (halt head + stop audio + event.local_stop).

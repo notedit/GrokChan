@@ -13,9 +13,11 @@ PUBLIC_ORIGIN = "https://YOUR_SUBDOMAIN.workers.dev"
 AGENT_PROVIDER = "grokbot"
 GROK_WEBHOOK_HEADER = "Authorization"
 GROK_WEBHOOK_SCHEME = "Bearer"
-# Stack-chan endpoints (/mcp, /ws/device) are OFF by default: M1 has no auth on
-# them yet. Set to "true" only for local dev / tests (wrangler dev --var).
+# Stack-chan endpoints (/mcp, /ws/device) are OFF by default.
+# Production: STACKCHAN_ENABLED=true + secret MCP_API_KEY + per-device tokens (POST /api/devices/<id>/token).
+# Dev defaults: leave STACKCHAN unset/false; leave ASR/TTS unset (voice off). Do not silently enable in prod.
 # STACKCHAN_ENABLED = "false"
+# MCP_API_KEY is a secret: `wrangler secret put MCP_API_KEY` (or set in .dev.vars for local).
 # Voice providers: unset -> that part is disabled (speak fails with tts_failed / no uplink in session.hello).
 # TTS_PROVIDER = "mock"        # mock | mock-stream | elevenlabs
 # ASR_PROVIDER = "mock"        # mock | workers-ai | elevenlabs
@@ -25,6 +27,7 @@ GROK_WEBHOOK_SCHEME = "Bearer"
 # ELEVENLABS_ASR_MODEL = "scribe_v2_realtime"
 # Voice engine tuning (all optional): UPLINK_MAX_MS=15000, UPLINK_IDLE_TIMEOUT_MS=3000, ASR_TIMEOUT_MS=10000,
 # AGENT_REPLY_TIMEOUT_MS=60000, VOICE_REPLY_MAX_CHARS=1000, VOICE_TURNS_PER_MIN=20
+# Echo policy: half-duplex + touch/PTT interrupt (firmware GC_VOICE_BARGE_IN_BY_VAD=0). No AEC yet.
 
 [[durable_objects.bindings]]
 name = "HUB"

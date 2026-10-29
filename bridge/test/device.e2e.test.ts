@@ -1,12 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { request as httpRequest } from "node:http";
-import { sleep, startWorker, waitFor, type Worker } from "./harness";
+import { sleep, startWorker, waitFor, issueDeviceToken, PASSCODE, MCP_API_KEY, type Worker } from "./harness";
 import { MockDevice, type MockOptions } from "./mock-device";
 import { mcpClient } from "./mcp-client";
 import { FRAME_DOWNLINK_AUDIO, PING_TEXT } from "../src/device/protocol";
 
 // Real workerd (wrangler dev) + a WebSocket mock device speaking mediasession-rpc/1.
-const VARS = { STACKCHAN_ENABLED: "true", TTS_PROVIDER: "mock", DEVICE_CMD_TIMEOUT_MS: "400", HELLO_TIMEOUT_MS: "1500", DEVICE_RATE_LIMIT_PER_SEC: "1000" };
+const VARS = { STACKCHAN_ENABLED: "true", TTS_PROVIDER: "mock", DEVICE_CMD_TIMEOUT_MS: "400", HELLO_TIMEOUT_MS: "1500", DEVICE_RATE_LIMIT_PER_SEC: "1000", SITE_PASSCODE: PASSCODE, MCP_API_KEY };
 
 let w: Worker; // main worker
 let strict: Worker; // low rate limit + slow audio pacing
@@ -17,10 +17,13 @@ const devices: MockDevice[] = [];
 let n = 0;
 
 /** Raw WebSocket upgrade attempt (fetch() forbids the Upgrade header): resolves with the HTTP status. */
-function upgradeStatus(base: string, path: string, upgrade = true): Promise<number> {
+function upgradeStatus(base: string, path: string, upgrade = true, extraHeaders: Record<string, string> = {}): Promise<number> {
   return new Promise((resolve, reject) => {
     const u = new URL(base + path);
-    const req = httpRequest({ host: u.hostname, port: u.port, path: u.pathname + u.search, headers: upgrade ? { Connection: "Upgrade", Upgrade: "websocket", "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==" } : {} });
+    const headers: Record<string, string> = upgrade
+      ? { Connection: "Upgrade", Upgrade: "websocket", "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==", ...extraHeaders }
+      : { ...extraHeaders };
+    const req = httpRequest({ host: u.hostname, port: u.port, path: u.pathname + u.search, headers });
     req.on("response", (res) => {
       res.resume();
       resolve(res.statusCode ?? 0);
@@ -33,10 +36,22 @@ function upgradeStatus(base: string, path: string, upgrade = true): Promise<numb
     req.end();
   });
 }
+
+/** Open a WS and wait for the close frame (used for auth-fail close codes). */
+function upgradeClose(base: string, path: string, extraHeaders: Record<string, string> = {}): Promise<{ code: number; reason: string }> {
+  return new Promise((resolve, reject) => {
+    const WS = WebSocket as unknown as new (u: string, o?: { headers?: Record<string, string> }) => WebSocket;
+    const ws = new WS(`${base.replace("http", "ws")}${path}`, { headers: extraHeaders });
+    const timer = setTimeout(() => { try { ws.close(); } catch {} reject(new Error("upgradeClose timeout")); }, 5000);
+    ws.addEventListener("close", (ev) => { clearTimeout(timer); resolve({ code: ev.code, reason: ev.reason }); });
+    ws.addEventListener("error", () => {});
+  });
+}
 const did = (p = "mock") => `${p}_${++n}_${Math.random().toString(36).slice(2, 7)}`;
 
 async function dev(base: string, opts: MockOptions = {}, id = did()): Promise<MockDevice> {
-  const d = new MockDevice(base, id, opts);
+  const token = opts.token ?? (await issueDeviceToken(base, id));
+  const d = new MockDevice(base, id, { ...opts, token });
   devices.push(d);
   await d.start();
   return d;
@@ -48,8 +63,8 @@ beforeAll(async () => {
     startWorker({ ...VARS, DEVICE_RATE_LIMIT_PER_SEC: "3", AUDIO_CHUNK_DELAY_MS: "120" }),
     startWorker({}),
   ]);
-  mcp = mcpClient(w.base);
-  smcp = mcpClient(strict.base);
+  mcp = mcpClient(w.base, { authorization: `Bearer ${MCP_API_KEY}` });
+  smcp = mcpClient(strict.base, { authorization: `Bearer ${MCP_API_KEY}` });
 });
 afterAll(async () => {
   for (const d of devices) try { d.close(); } catch {}
@@ -57,8 +72,8 @@ afterAll(async () => {
 });
 
 describe("gating", () => {
-  it("/mcp and /ws/device are 404 unless STACKCHAN_ENABLED=true (no auth yet)", async () => {
-    expect((await mcpClient(off.base).rpc("ping")).status).toBe(404);
+  it("/mcp and /ws/device are 404 unless STACKCHAN_ENABLED=true", async () => {
+    expect((await mcpClient(off.base, { authorization: `Bearer ${MCP_API_KEY}` }).rpc("ping")).status).toBe(404);
     expect(await upgradeStatus(off.base, "/ws/device?device_id=x")).toBe(404);
   });
   it("existing chat API still works next to the device endpoints", async () => {
@@ -66,6 +81,34 @@ describe("gating", () => {
     expect(r.status).toBe(200);
     expect(((await r.json()) as any).ok).toBe(true);
     expect((await fetch(w.base + "/")).status).toBe(200);
+  });
+});
+
+describe("stackchan auth", () => {
+  it("POST /mcp without Bearer is 401; wrong key is 401; good key works", async () => {
+    expect((await mcpClient(w.base).rpc("ping")).status).toBe(401);
+    expect((await mcpClient(w.base, { authorization: "Bearer wrong" }).rpc("ping")).status).toBe(401);
+    expect((await mcp.rpc("ping")).status).toBe(200);
+  });
+  it("device WS without token closes 4003; wrong token closes 4003; good token hellos", async () => {
+    const id = did("auth");
+    const noTok = await upgradeClose(w.base, `/ws/device?device_id=${id}`, { "Device-Id": id });
+    expect(noTok.code).toBe(4003);
+    const token = await issueDeviceToken(w.base, id);
+    const bad = await upgradeClose(w.base, `/ws/device?device_id=${id}`, { "Device-Id": id, Authorization: "Bearer not-the-token" });
+    expect(bad.code).toBe(4003);
+    const d = await dev(w.base, { token }, id);
+    expect(d.helloResult.session_id).toMatch(/^s_/);
+  });
+  it("issue/revoke device token via SITE_PASSCODE API", async () => {
+    const id = did("tok");
+    const token = await issueDeviceToken(w.base, id);
+    expect(token.length).toBeGreaterThan(20);
+    const list = await fetch(w.base + "/api/devices", { headers: { "x-passcode": PASSCODE } }).then((r) => r.json()) as any;
+    expect(list.devices.some((x: any) => x.device_id === id && x.has_token)).toBe(true);
+    await fetch(`${w.base}/api/devices/${id}/token`, { method: "DELETE", headers: { "x-passcode": PASSCODE } });
+    const closed = await upgradeClose(w.base, `/ws/device?device_id=${id}`, { "Device-Id": id, Authorization: `Bearer ${token}` });
+    expect(closed.code).toBe(4003);
   });
 });
 
@@ -82,17 +125,23 @@ describe("MCP over HTTP (real worker)", () => {
     expect((await mcp.post({ jsonrpc: "2.0", id: 1, method: "ping" }, { origin: "https://evil.example" })).status).toBe(403);
   });
   it("with no device ever connected: list_devices is empty and tools say device_not_found", async () => {
-    // must run before any mock device connects to this worker
-    const l = await mcp.call("list_devices");
-    expect(l.envelope.result.devices).toEqual([]);
-    expect((await mcp.call("move_head", { pan: 1 })).envelope.error.code).toBe("device_not_found");
-    expect((await mcp.call("move_head", { pan: 1, device_id: "ghost" })).envelope.error.code).toBe("device_not_found");
+    // Fresh worker: shared suite worker may already have hello'd devices from earlier tests.
+    const fresh = await startWorker(VARS);
+    try {
+      const c = mcpClient(fresh.base, { authorization: `Bearer ${MCP_API_KEY}` });
+      const l = await c.call("list_devices");
+      expect(l.envelope.result.devices).toEqual([]);
+      expect((await c.call("move_head", { pan: 1 })).envelope.error.code).toBe("device_not_found");
+      expect((await c.call("move_head", { pan: 1, device_id: "ghost" })).envelope.error.code).toBe("device_not_found");
+    } finally {
+      await fresh.stop();
+    }
   });
   it("a single device is the default target (device_id optional)", async () => {
     const solo = await startWorker(VARS);
     try {
       const d = await dev(solo.base);
-      const c = mcpClient(solo.base);
+      const c = mcpClient(solo.base, { authorization: `Bearer ${MCP_API_KEY}` });
       const r = await c.call("set_expression", { expression: "happy" });
       expect(r.envelope).toMatchObject({ ok: true, device_id: d.deviceId });
       await dev(solo.base); // second device -> ambiguous
@@ -119,20 +168,23 @@ describe("device WebSocket handshake (JSON-RPC session.hello)", () => {
     expect(await upgradeStatus(w.base, "/ws/device?device_id=ok_id", false)).toBe(426);
   });
   it("unsupported protocol / wrong device id in hello -> error response and close 4002", async () => {
-    const d = new MockDevice(w.base, did());
+    const id = did();
+    const d = new MockDevice(w.base, id, { token: await issueDeviceToken(w.base, id) });
     devices.push(d);
     await d.connect();
     const r = await d.request("session.hello", { ...d.helloParams(), protocol: "other/9" });
     expect(r.error.code).toBe(-32602);
     expect((await d.waitClosed()).code).toBe(4002);
-    const d2 = new MockDevice(w.base, did());
+    const id2 = did();
+    const d2 = new MockDevice(w.base, id2, { token: await issueDeviceToken(w.base, id2) });
     devices.push(d2);
     await d2.connect();
     const r2 = await d2.request("session.hello", { ...d2.helloParams(), device_id: "somebody_else" });
     expect(r2.error.code).toBe(-32602);
   });
   it("no hello within HELLO_TIMEOUT_MS -> closed with 4001; other messages before hello are ignored", async () => {
-    const d = new MockDevice(w.base, did());
+    const id = did();
+    const d = new MockDevice(w.base, id, { token: await issueDeviceToken(w.base, id) });
     devices.push(d);
     await d.connect();
     d.notify("state.update", { battery: { percent: 1 } });

@@ -53,7 +53,17 @@ describe("uplink validation", () => {
     expect(u.accept(frame(1, 3))).toMatchObject({ ok: false, reason: "bad_frame" });
     for (let i = 1; i < 10; i++) expect(u.accept(frame(i, 3200)).ok).toBe(true);
     expect(u.durationMs).toBeCloseTo(1000);
+    expect(u.bytes).toBe(lim.maxBytes); // exact limit accepted; one more byte rejects
     expect(u.accept(frame(10, 2))).toMatchObject({ ok: false, reason: "too_large" });
+    const exact = new UplinkStream(8, lim);
+    let left = lim.maxBytes;
+    let seq = 0;
+    while (left > 0) {
+      const n = Math.min(3200, left);
+      expect(exact.accept(frame(seq++, n)).ok).toBe(true);
+      left -= n;
+    }
+    expect(exact.bytes).toBe(lim.maxBytes);
     const v = new UplinkStream(6, lim);
     expect(v.accept(frame(0, 100, true)).ok).toBe(true);
     expect(v.accept(frame(1, 100))).toMatchObject({ ok: false, reason: "bad_frame" });

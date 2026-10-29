@@ -11,7 +11,7 @@ export function createDoGateway(env: GatewayEnv): DeviceGateway {
   const registry = () => env.REGISTRY.getByName("registry");
   return {
     async listDevices(): Promise<DeviceSummary[]> {
-      const entries = await registry().list();
+      const entries = await registry().listConnected();
       return Promise.all(
         entries.map(async (e) => {
           try {

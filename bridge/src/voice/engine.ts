@@ -497,7 +497,6 @@ export class VoiceEngine {
 
     let pending = new Uint8Array(0);
     let lastSentence = -1;
-    let ttsFailed = false;
     const sendFrame = async (payload: Uint8Array) => {
       if (s.seq > 0 && this.cfg.chunkDelayMs > 0) await this.sleep(this.cfg.chunkDelayMs, t, s);
       // re-evaluated after every wake-up: an audio.credit may shorten (or lengthen) the wait
@@ -531,8 +530,10 @@ export class VoiceEngine {
       }
     } catch (e) {
       if (this.turn !== t) return;
-      ttsFailed = true; // keep what was already synthesized: end the stream normally, then report
+      // Mid-stream TTS failure: abort immediately (audio.end aborted + idle:tts_failed). Do not
+      // play out a partial reply as if it completed — the device must stop and the turn ends.
       console.log("tts stream error:", e instanceof Error ? e.message : String(e));
+      return this.finish(t, "tts_failed");
     }
     if (!(await drain(true))) return;
     if (this.turn !== t || s.ended) return;
@@ -557,7 +558,7 @@ export class VoiceEngine {
         t.ac.signal.addEventListener("abort", done, { once: true });
       });
     }
-    if (this.turn === t) this.finish(t, ttsFailed ? "tts_failed" : "done");
+    if (this.turn === t) this.finish(t, "done");
   }
 
   /** Abortable sleep that also wakes early on `audio.credit` so pacing re-evaluates. */

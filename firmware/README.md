@@ -10,7 +10,19 @@ M5Stack StackChan（CoreS3 + 舵机底座）上的 **JSON-RPC 2.0 WebSocket 客�
 - `ping`/`pong` 保活 + 指数退避 + 抖动重连（1 s … 30 s）；
 - 暂无认证（`-32004 unauthorized` 仅在 bridge 侧保留）。
 
-> **状态：已在主机上测试、已用 PlatformIO 编译通过，尚未在真机上运行。** 所有硬件相关参数都放在 `include/gc_config.example.h`，凡带「待实机确认」的都只来自官方 StackChan 固件源码（MIT）或保守猜测，不是在你的机器上验证过的事实。
+> **状态：已在主机上测试、已用 PlatformIO 编译通过，尚未在真机上运行。** 所有硬件相关参数都放在 `include/gc_config.example.h`，凡带「设备鉴权 / Auth
+
+固件握手携带 `Authorization: Bearer <GC_DEVICE_TOKEN>` 与 `Device-Id: <GC_DEVICE_ID>`。在 bridge 上用站点口令签发（只显示一次）：
+
+```bash
+curl -s -X POST -H "X-Passcode: $SITE_PASSCODE" \
+  "$ORIGIN/api/devices/$GC_DEVICE_ID/token"
+# 把返回的 token 写入 include/gc_config.h 的 GC_DEVICE_TOKEN（该文件已 gitignore）
+```
+
+回声策略定稿为**半双工**：`GC_VOICE_BARGE_IN_BY_VAD` 默认 0，播放期间能量 VAD 不自动 barge-in，仅触摸/PTT 或 MCP `stop_audio` / `emergency_stop` 可打断。
+
+待实机确认」的都只来自官方 StackChan 固件源码（MIT）或保守猜测，不是在你的机器上验证过的事实。
 
 ## 目录结构
 
